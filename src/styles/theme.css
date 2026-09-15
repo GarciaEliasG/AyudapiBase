@@ -25,12 +25,16 @@
   --font-weight-medium: 500;
   --font-weight-normal: 400;
   --ring: #93C5FD;
-  /* AyudAPI brand tokens */
-  --brand-red: #E53935;
+  /* AyudAPI design tokens (DEV1) */
+  /* Azul corporativo para navegación, tarjetas y botones primarios.
+     Grises neutros como base. El rojo queda reservado EXCLUSIVAMENTE para
+     emergencias críticas, alertas de salud severas y acciones destructivas. */
+  --brand-red: #DC2626;
   --brand-navy: #0F1929;
   --brand-blue: #2563EB;
+  --brand-blue-strong: #1D4ED8;
+  --brand-blue-soft: #EFF6FF;
   --brand-green: #16A34A;
-  --brand-purple: #7C3AED;
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
