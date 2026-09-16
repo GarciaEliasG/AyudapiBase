@@ -24,3 +24,10 @@ pnpm-debug.log*
 # Typescript
 *.tsbuildinfo
 next-env.d.ts
+node_modules/
+dist/
+.env
+.env.local
+.env*.local
+
+tsconfig.tsbuildinfo
