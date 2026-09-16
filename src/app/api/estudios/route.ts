@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { EstudioConAcceso, TipoEstudio } from "@/lib/supabase/database";
 
+import { asegurarPerfilPaciente } from "@/lib/auth/registro";
 import {
   getBearerToken,
   getSessionUser,
@@ -61,17 +62,14 @@ export async function POST(req: Request) {
 
   const admin = createAdminServerClient();
 
-  const { data: perfil, error: perfilError } = await admin
-    .from("perfiles_paciente")
-    .select("id")
-    .eq("usuario_id", user.id)
-    .single();
-  if (perfilError || !perfil) {
-    return jsonError(
-      "Perfil de paciente no encontrado. Completá tu perfil de paciente para administrar tus estudios.",
-      404,
-    );
+  // Alta transparente del perfil de paciente si aún no existe (médicos con rol
+  // dual, cuentas nuevas): el primer estudio crea el perfil con los datos
+  // básicos en lugar de fallar con 404.
+  const asegurado = await asegurarPerfilPaciente(admin, user);
+  if (!asegurado) {
+    return jsonError("No se pudo preparar tu perfil de paciente. Reintentá.", 500);
   }
+  const perfil = { id: asegurado.id };
 
   let formData: FormData;
   try {
@@ -149,7 +147,7 @@ export async function POST(req: Request) {
     return jsonError(insertError.message, 500, insertError.code);
   }
 
-  return jsonOk({ estudio, message: "Estudio subido correctamente." }, 201);
+  return jsonOk({ estudio, message: "Estudio subido correctamente.", perfil_creado: asegurado.creado }, 201);
 }
 
 export async function GET(req: Request) {
@@ -164,17 +162,13 @@ export async function GET(req: Request) {
 
   const admin = createAdminServerClient();
 
-  const { data: perfil, error: perfilError } = await admin
-    .from("perfiles_paciente")
-    .select("id")
-    .eq("usuario_id", user.id)
-    .single();
-  if (perfilError || !perfil) {
-    return jsonError(
-      "Perfil de paciente no encontrado. Completá tu perfil de paciente para administrar tus estudios.",
-      404,
-    );
+  // Lectura tolerante: sin perfil de paciente aún, la lista es vacía (el
+  // perfil se crea de forma transparente al adjuntar el primer estudio).
+  const asegurado = await asegurarPerfilPaciente(admin, user);
+  if (!asegurado) {
+    return jsonOk({ estudios: [] });
   }
+  const perfil = { id: asegurado.id };
 
   const { data: filas, error } = await admin
     .from("estudios")

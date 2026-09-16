@@ -61,12 +61,15 @@ function descifrarTexto(valor: string | null): string | null {
 }
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ slug: string }> },
 ) {
   const { slug } = await params;
 
-  const token = getBearerToken(_req.headers.get("authorization"));
+  const origen = new URL(req.url).searchParams.get("origen");
+  const accesoDesdeEmergencia = origen === "qr-emergencia";
+
+  const token = getBearerToken(req.headers.get("authorization"));
   if (!token) {
     return jsonError("Autenticación requerida.", 401);
   }
@@ -127,7 +130,10 @@ export async function GET(
     accion: "acceso_historial_clinico",
     paciente_id: perfil.id,
     usuario_id: user.id,
-    detalles: { slug },
+    detalles: {
+      slug,
+      origen: accesoDesdeEmergencia ? "qr-emergencia" : "panel-medico",
+    },
   });
 
   const respuesta: PacienteClinico = {

@@ -73,8 +73,14 @@ export default function AccesoMedicoPage() {
           <div className="space-y-3">
             <Link
               className="w-full flex items-center justify-center gap-2 text-white font-bold py-3 rounded-xl transition-colors text-sm"
-              href="/mi-perfil"
+              href="/auth/elegir-rol?destino=%2Fmedico%2Fescanear"
               style={{ background: "#2563EB" }}
+            >
+              <Stethoscope size={16} /> Vincular rol de médico
+            </Link>
+            <Link
+              className="w-full flex items-center justify-center gap-2 bg-white/5 hover:bg-white/10 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
+              href="/mi-perfil"
             >
               <ArrowRight size={16} /> Ir a mi perfil
             </Link>
@@ -158,10 +164,10 @@ export default function AccesoMedicoPage() {
           <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-3 flex gap-2">
             <Shield className="text-amber-600 flex-shrink-0 mt-0.5" size={14} />
             <p className="text-xs text-amber-800 leading-relaxed">
-              <strong>Acceso auditado:</strong> Si aún no tenés cuenta, registrate
-              dentro del formulario de acceso eligiendo el rol{" "}
-              <strong>Médico/a</strong> con tu matrícula profesional. Cada
-              consulta queda registrada. Ley 25.326.
+              <strong>Acceso auditado:</strong> ingresá con Google y, si aún no
+              tenés cuenta, elegí el rol <strong>Médico/a</strong> con tu
+              matrícula profesional en el panel de vinculación. Cada consulta
+              queda registrada. Ley 25.326.
             </p>
           </div>
         </div>

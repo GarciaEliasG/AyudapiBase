@@ -1,8 +1,9 @@
 import type { RolUsuario } from "@/lib/supabase/database";
 
-import { mapDbError, parseJsonBody } from "@/lib/api/http";
+import { parseJsonBody } from "@/lib/api/http";
+import { confirmarYProvisionar } from "@/lib/auth/registro";
 import { jsonError, jsonOk } from "@/lib/auth/session";
-import { createAdminServerClient } from "@/lib/supabase/server";
+import { createAdminServerClient, createAnonServerClient } from "@/lib/supabase/server";
 import {
   esCuitValido,
   esEmailValido,
@@ -28,6 +29,17 @@ interface RegisterRequest {
   telefono_contacto?: string;
 }
 
+/**
+ * Alta de cuenta por email y contraseña.
+ *
+ * El usuario queda habilitado de inmediato (`email_confirm: true`), su perfil
+ * se crea en la base de datos (`crear_perfil_inicial`) y la respuesta incluye
+ * la sesión de Supabase para que el frontend lo autentique sin pasos extra.
+ *
+ * Nota: se elimina deliberadamente la confirmación por código OTP porque el
+ * despacho de emails (SMTP) no está garantizado; una cuenta creada debe poder
+ * entrar siempre, de forma fluida.
+ */
 export async function POST(req: Request) {
   const parsed = await parseJsonBody<RegisterRequest>(req);
   if (!parsed.ok) {
@@ -79,25 +91,6 @@ export async function POST(req: Request) {
 
   const admin = createAdminServerClient();
 
-  const { data: authData, error: authError } = await admin.auth.admin.createUser({
-    email,
-    email_confirm: true,
-    password: input.password,
-  });
-  if (authError) {
-    if (authError.status === 422 || authError.code === "weak_password") {
-      return jsonError(
-        "No se pudo crear la cuenta: revisá el email y la contraseña.",
-        400,
-      );
-    }
-    if (authError.code === "email_exists" || authError.status === 422) {
-      return jsonError("Ya existe una cuenta con ese email.", 409);
-    }
-    return jsonError(authError.message, authError.status ?? 400);
-  }
-
-  const userId = authData.user.id;
   const datos = {
     alias: input.alias,
     cuit: input.cuit,
@@ -110,25 +103,81 @@ export async function POST(req: Request) {
     telefono_contacto: input.telefono_contacto,
   };
 
-  const { data: perfil, error: perfilError } = await admin.rpc(
-    "crear_perfil_inicial",
-    { p_datos: datos, p_rol: rol, p_usuario_id: userId },
-  );
-  if (perfilError) {
-    // Compensación: si falla la creación del perfil, se elimina el auth.user
-    // para no dejar cuentas huérfanas.
-    await admin.auth.admin.deleteUser(userId, true);
-    return mapDbError(perfilError);
+  // 1. Se crea la cuenta ya confirmada. Sin confirmar por email, el usuario
+  // quedaría atrapado dependiendo de un SMTP que puede no estar disponible.
+  const { data: authData, error: authError } = await admin.auth.admin.createUser({
+    email,
+    email_confirm: true,
+    password: input.password,
+    user_metadata: {
+      app_datos: datos,
+      app_rol: rol,
+    },
+  });
+  if (authError) {
+    if (authError.code === "email_exists") {
+      return jsonError("Ya existe una cuenta con ese email. Iniciá sesión.", 409);
+    }
+    if (authError.status === 422 || authError.code === "weak_password") {
+      return jsonError(
+        "No se pudo crear la cuenta: revisá el email y la contraseña.",
+        400,
+      );
+    }
+    return jsonError(authError.message, authError.status ?? 400);
+  }
+  if (!authData.user) {
+    return jsonError("No se pudo crear la cuenta. Reintentá.", 400);
+  }
+  const userId = authData.user.id;
+
+  // 2. Alta definitiva del perfil (roles_usuario / perfiles_*).
+  try {
+    await confirmarYProvisionar(admin, {
+      email,
+      emailVerificado: true,
+      id: userId,
+      appDatos: datos,
+      appRol: rol,
+    });
+  } catch (err) {
+    // El perfil pendiente se auto-provisiona en el siguiente acceso
+    // (/api/auth/rol). No se bloquea el ingreso por un fallo transitorio.
+    console.error("[register] No se pudo provisionar el perfil:", err);
+  }
+
+  // 3. Sesión completa para que el usuario quede logueado en el acto.
+  const { data: signInData, error: signInError } =
+    await createAnonServerClient().auth.signInWithPassword({
+      email,
+      password: input.password,
+    });
+  if (signInError) {
+    console.error("[register] Cuenta creada pero no se pudo autenticar:", signInError.message);
+    return jsonOk(
+      {
+        message: "Tu cuenta se creó correctamente. Ahora iniciá sesión.",
+        requiere_login: true,
+        rol,
+        session: { access_token: null, refresh_token: null },
+        user: { email, id: userId },
+      },
+      201,
+    );
   }
 
   return jsonOk(
     {
-      message: "Cuenta creada correctamente.",
-      perfil,
+      message: "Tu cuenta fue creada correctamente.",
+      rol,
+      requiere_verificacion: false,
+      session: {
+        access_token: signInData.session?.access_token ?? null,
+        refresh_token: signInData.session?.refresh_token ?? null,
+      },
       user: {
-        email: authData.user.email,
+        email,
         id: userId,
-        rol,
       },
     },
     201,

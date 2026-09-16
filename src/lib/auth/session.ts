@@ -9,7 +9,11 @@ import {
 } from "@/lib/supabase/server";
 
 export interface SessionUser {
+  appDatos?: Record<string, unknown> | null;
+  appRol?: RolUsuario | null;
   email?: string;
+  /** `true` solo si el email fue confirmado (link de verificación, OTP o OAuth con verificación del proveedor). */
+  emailVerificado: boolean;
   id: string;
 }
 
@@ -40,12 +44,32 @@ export function createUserClient(authToken: string) {
   });
 }
 
+const ROLES_VALIDOS = new Set<RolUsuario>(["paciente", "medico", "institucion", "admin"]);
+
 export async function getSessionUser(authToken: string): Promise<SessionUser | null> {
   const { data, error } = await createAnonServerClient().auth.getUser(authToken);
   if (error || !data.user) {
     return null;
   }
-  return { email: data.user.email ?? undefined, id: data.user.id };
+  const usuario = data.user;
+  const metadatos = (usuario.user_metadata ?? {}) as Record<string, unknown>;
+  const appRolRaw = metadatos.app_rol;
+  const appRol: RolUsuario | null =
+    typeof appRolRaw === "string" && ROLES_VALIDOS.has(appRolRaw as RolUsuario)
+      ? (appRolRaw as RolUsuario)
+      : null;
+  const appDatos =
+    typeof metadatos.app_datos === "object" && metadatos.app_datos !== null
+      ? (metadatos.app_datos as Record<string, unknown>)
+      : null;
+
+  return {
+    appDatos,
+    appRol,
+    email: usuario.email ?? undefined,
+    emailVerificado: usuario.email_confirmed_at != null,
+    id: usuario.id,
+  };
 }
 
 export async function getRolesForUser(userId: string): Promise<RolUsuario[]> {

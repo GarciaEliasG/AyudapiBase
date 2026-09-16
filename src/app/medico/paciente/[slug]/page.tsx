@@ -119,7 +119,16 @@ function PanelPacienteClinico({ session, slug }: PanelProps) {
   useEffect(() => {
     let activo = true;
 
-    apiFetch<PacienteClinico>(`/api/medico/paciente/${encodeURIComponent(slug)}`, session)
+    // Se reenvía el origen cuando el profesional llega desde un QR de
+    // emergencia (?origen=qr-emergencia) para que la API quede registrado el
+    // acceso en la auditoría con ese contexto.
+    const origen = new URLSearchParams(window.location.search).get("origen");
+    const queryOrigen = origen ? `?origen=${encodeURIComponent(origen)}` : "";
+
+    apiFetch<PacienteClinico>(
+      `/api/medico/paciente/${encodeURIComponent(slug)}${queryOrigen}`,
+      session,
+    )
       .then((res) => {
         if (!activo) return;
         setPaciente(res);

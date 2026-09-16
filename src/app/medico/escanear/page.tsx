@@ -26,10 +26,14 @@ import { useEffect, useState } from "react";
 import type { PerfilMedicoRow } from "@/lib/supabase/database";
 
 import { LoginModal } from "@/components/auth/login-modal";
-import { CameraScanner } from "@/components/medico/camera-scanner";
+import {
+  CameraScanner,
+  type ScannerErrorInfo,
+} from "@/components/medico/camera-scanner";
 import { apiFetch } from "@/lib/api/client";
 import { useSession } from "@/lib/auth/use-session";
 import { createBrowserClient } from "@/lib/supabase/browser";
+import { perfilMedicoCompleto } from "@/lib/validation/profile";
 
 interface VerificarQrResponse {
   paciente_id: string;
@@ -151,13 +155,21 @@ export default function MedicoEscanearPage() {
   const [escaneos, setEscaneos] = useState<EscaneoReciente[]>([]);
   const [cargandoEscaneos, setCargandoEscaneos] = useState(true);
   const [errorEscaneos, setErrorEscaneos] = useState<string | null>(null);
+  const [errorCamara, setErrorCamara] = useState<ScannerErrorInfo | null>(null);
 
   useEffect(() => {
     if (!session) return;
     let active = true;
     apiFetch<PerfilMedicoResponse>("/api/medico/me", session)
       .then((res) => {
-        if (active) setMedico(res);
+        if (active) {
+          setMedico(res);
+          // Médico con perfil incompleto (registro por Google con matrícula
+          // provisoria "S/M" o datos faltantes): se completa antes de operar.
+          if (!perfilMedicoCompleto(res.perfil)) {
+            router.replace("/medico/completar-perfil");
+          }
+        }
       })
       .catch(() => {
         if (active) setMedico(null);
@@ -165,7 +177,7 @@ export default function MedicoEscanearPage() {
     return () => {
       active = false;
     };
-  }, [session]);
+  }, [router, session]);
 
   useEffect(() => {
     if (!session) return;
@@ -224,6 +236,7 @@ export default function MedicoEscanearPage() {
 
   function manejarDeteccion(texto: string) {
     setScanning(false);
+    setErrorCamara(null);
     void verificar(texto);
   }
 
@@ -349,6 +362,7 @@ export default function MedicoEscanearPage() {
                 onClick={() => {
                   setScanning(true);
                   setError(null);
+                  setErrorCamara(null);
                 }}
               >
                 <Camera size={16} /> Escanear con cámara
@@ -360,10 +374,22 @@ export default function MedicoEscanearPage() {
                 <CameraScanner
                   containerId={CAMARA_ID}
                   onDetected={manejarDeteccion}
-                  onError={(mensaje) =>
-                    setError(`Cámara no disponible: ${mensaje}`)
-                  }
+                  onError={setErrorCamara}
                 />
+                {(errorCamara?.categoria === "permisos" ||
+                  errorCamara?.categoria === "inseguro" ||
+                  errorCamara?.categoria === "bloqueada" ||
+                  errorCamara?.categoria === "sin-camara") && (
+                  <div className="mt-3 bg-amber-400/15 border border-amber-400/40 rounded-xl px-4 py-3 text-left">
+                    <p className="text-amber-300 text-xs font-bold mb-1 flex items-center gap-1.5">
+                      <AlertTriangle size={12} /> La cámara puede estar bloqueada
+                    </p>
+                    <p className="text-blue-100 text-xs leading-relaxed">
+                      {errorCamara.hint} El slug del QR (código impreso) funciona
+                      siempre: copialo abajo o pedile que te lo dicten.
+                    </p>
+                  </div>
+                )}
                 <button
                   className="w-full flex items-center justify-center gap-2 bg-white/15 border border-white/30 hover:bg-white/25 text-white font-semibold py-2.5 rounded-xl transition-colors text-sm mt-3"
                   onClick={() => setScanning(false)}

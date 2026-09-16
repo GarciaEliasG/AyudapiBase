@@ -239,10 +239,23 @@ begin
       grupo_sanguineo = coalesce(excluded.grupo_sanguineo, public.perfiles_paciente.grupo_sanguineo);
 
   elsif p_rol = 'medico' then
+    -- `matricula` es UNIQUE: nunca se persiste un provisorio compartido
+    -- ("S/M"). Sin matrícula real se genera una provisoria única por usuario
+    -- que luego se reemplaza en la vinculación o el completado de perfil.
     insert into public.perfiles_medico (usuario_id, matricula, especialidad, telefono_contacto)
     values (
       p_usuario_id,
-      coalesce(p_datos->>'matricula', 'S/M'),
+      coalesce(
+        nullif(
+          case lower(coalesce(p_datos->>'matricula', ''))
+            when '' then null
+            when 's/m' then null
+            else p_datos->>'matricula'
+          end,
+          ''
+        ),
+        'PENDIENTE-' || upper(left(replace(p_usuario_id::text, '-', ''), 8))
+      ),
       p_datos->>'especialidad',
       p_datos->>'telefono_contacto'
     )

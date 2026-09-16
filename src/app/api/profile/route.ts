@@ -5,9 +5,10 @@ import type {
 } from "@/lib/supabase/database";
 
 import { parseJsonBody } from "@/lib/api/http";
+import { confirmarYProvisionar, prioridadPrincipal } from "@/lib/auth/registro";
 import {
   getBearerToken,
-  getRoleForUser,
+  getRolesForUser,
   getSessionUser,
   jsonError,
   jsonOk,
@@ -73,20 +74,22 @@ export async function GET(req: Request) {
 
   const admin = createAdminServerClient();
 
-  let rol = await getRoleForUser(user.id);
+  let roles = await getRolesForUser(user.id);
+  let rol = prioridadPrincipal(roles);
 
-  // Auto-provisión para usuarios creados por OAuth (Google): se les asigna el
-  // rol paciente y un perfil mínimo en una sola transacción.
+  // Auto-provisión del perfil cuando todavía no existe (cuentas de Google,
+  // registros por email con alta diferida, etc.). La cuenta se confirma en el
+  // proceso, de modo que ningún usuario real queda inhabilitado por depender de
+  // un email de confirmación que no llega.
   if (!rol) {
-    const { error: provError } = await admin.rpc("crear_perfil_inicial", {
-      p_datos: { email: user.email },
-      p_rol: "paciente",
-      p_usuario_id: user.id,
-    });
-    if (provError) {
-      return jsonError(provError.message, 500, provError.code);
+    try {
+      const resultado = await confirmarYProvisionar(admin, user);
+      rol = resultado.rol;
+      roles = await getRolesForUser(user.id);
+    } catch (provError) {
+      const e = provError as { code?: string; message?: string; };
+      return jsonError(e.message ?? "No se pudo completar el alta del perfil.", 500, e.code);
     }
-    rol = "paciente";
   }
 
   const respuesta: ProfileGetResponse = {
@@ -115,7 +118,10 @@ export async function GET(req: Request) {
     } as PerfilPacienteConSensibles;
   }
 
-  if (rol === "medico") {
+  // Los perfiles extendidos se resuelven por pertenencia al rol (no por el rol
+  // principal), para que un médico con rol dual siempre vea su tarjeta
+  // profesional sin importar el orden de las filas en `roles_usuario`.
+  if (roles.includes("medico")) {
     const { data, error } = await admin
       .from("perfiles_medico")
       .select("*")
@@ -125,7 +131,8 @@ export async function GET(req: Request) {
       return jsonError(error.message, 500, error.code);
     }
     respuesta.perfil_medico = data;
-  } else if (rol === "institucion") {
+  }
+  if (roles.includes("institucion")) {
     const { data, error } = await admin
       .from("perfiles_institucion")
       .select("*")

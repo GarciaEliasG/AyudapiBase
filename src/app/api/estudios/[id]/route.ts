@@ -25,16 +25,14 @@ export async function DELETE(
 
   const admin = createAdminServerClient();
 
-  const { data: perfil, error: perfilError } = await admin
+  const { data: perfil } = await admin
     .from("perfiles_paciente")
     .select("id")
     .eq("usuario_id", user.id)
-    .single();
-  if (perfilError || !perfil) {
-    return jsonError(
-      "Perfil de paciente no encontrado. Completá tu perfil de paciente para administrar tus estudios.",
-      404,
-    );
+    .maybeSingle();
+  if (!perfil) {
+    // Sin perfil de paciente no puede existir un estudio propio.
+    return jsonError("Estudio no encontrado.", 404);
   }
 
   const { id } = await params;

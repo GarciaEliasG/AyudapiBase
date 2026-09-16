@@ -1,5 +1,6 @@
 import type { RolUsuario } from "@/lib/supabase/database";
 
+import { confirmarYProvisionar } from "@/lib/auth/registro";
 import {
   getBearerToken,
   getRolesForUser,
@@ -29,19 +30,17 @@ export async function GET(req: Request) {
   let rol: RolUsuario | null =
     prioridad.find((r) => roles.includes(r)) ?? null;
 
-  // Auto-provisión para usuarios creados por OAuth (Google), igual que en
-  // GET /api/profile: se garantiza que toda sesión válida tenga rol.
+  // Auto-provisión para usuarios que todavía no tienen rol (p. ej. OAuth/Google
+  // o registros con alta diferida). La cuenta se confirma en el proceso para que
+  // el acceso sea siempre fluido.
   if (!rol) {
-    const admin = createAdminServerClient();
-    const { error } = await admin.rpc("crear_perfil_inicial", {
-      p_datos: { email: user.email },
-      p_rol: "paciente",
-      p_usuario_id: user.id,
-    });
-    if (error) {
-      return jsonError(error.message, 500, error.code);
+    try {
+      const resultado = await confirmarYProvisionar(createAdminServerClient(), user);
+      rol = resultado.rol;
+    } catch (error) {
+      console.error("[auth/rol] No se pudo provisionar el rol:", error);
+      return jsonError("No se pudo completar el alta del perfil. Reintentá.", 500);
     }
-    rol = "paciente";
   }
 
   return jsonOk({ rol: rol as RolUsuario });

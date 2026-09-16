@@ -12,12 +12,13 @@ import {
   QrCode,
   RefreshCw,
   ShieldOff,
+  Stethoscope,
   User,
 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-import type { Medicamento, PerfilPacienteRow, RolUsuario } from "@/lib/supabase/database";
+import type { Medicamento, PerfilMedicoRow, PerfilPacienteRow, RolUsuario } from "@/lib/supabase/database";
 
 import { LoginModal } from "@/components/auth/login-modal";
 import { StudyManager } from "@/components/estudios/study-manager";
@@ -28,6 +29,7 @@ import { cn } from "@/lib/utils";
 
 interface PerfilResponse {
   perfil: PerfilPacienteRow & { medicacion: Medicamento[] | null; notas_medicas: string | null };
+  perfil_medico: PerfilMedicoRow | null;
   rol: RolUsuario;
 }
 
@@ -196,6 +198,45 @@ export default function MiPerfilPage() {
         {(error || message) && (
           <div className={cn("rounded-xl px-4 py-3 mb-4 text-sm", error ? "bg-amber-50 border border-amber-200 text-amber-700" : "bg-green-50 border border-green-100 text-green-700")}>
             {error ?? message}
+          </div>
+        )}
+
+        {data?.rol === "medico" && (
+          <div className="bg-white rounded-2xl border-2 border-blue-100 p-6 shadow-sm mb-5">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center">
+                <Stethoscope className="text-emerald-600" size={18} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h2 className="font-bold text-gray-900">Perfil profesional médico</h2>
+                <p className="text-sm text-gray-500">
+                  {data.perfil_medico?.especialidad ?? "Especialidad no cargada"}
+                </p>
+              </div>
+              <span className="flex items-center gap-1 border border-emerald-300 text-emerald-700 text-xs font-semibold px-3 py-1 rounded-full flex-shrink-0">
+                Acceso auditado
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-center mb-4">
+              <div className="bg-gray-50 rounded-xl py-3">
+                <p className="text-xs text-gray-400">Matrícula</p>
+                <p className="font-semibold text-gray-900 text-sm break-all">{data.perfil_medico?.matricula ?? "—"}</p>
+              </div>
+              <div className="bg-gray-50 rounded-xl py-3">
+                <p className="text-xs text-gray-400">Especialidad</p>
+                <p className="font-semibold text-gray-900 text-sm">{data.perfil_medico?.especialidad ?? "—"}</p>
+              </div>
+              <div className="bg-gray-50 rounded-xl py-3">
+                <p className="text-xs text-gray-400">Contacto</p>
+                <p className="font-semibold text-gray-900 text-sm">{data.perfil_medico?.telefono_contacto ?? "—"}</p>
+              </div>
+            </div>
+            <Link
+              className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold py-2.5 rounded-lg transition-colors"
+              href="/medico/escanear"
+            >
+              <Stethoscope size={15} /> Ir a mi panel médico (escanear QR)
+            </Link>
           </div>
         )}
 

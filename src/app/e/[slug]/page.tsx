@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 
 import { AlertTriangle, Heart, Lock, Phone } from "lucide-react";
 
+import { AccesoMedicoDiscreto } from "@/components/emergency/acceso-medico-discreto";
 import { ActivarAlerta } from "@/components/emergency/activating-alert";
 import { PreviewNav } from "@/components/emergency/preview-nav";
 import { createAnonServerClient } from "@/lib/supabase/server";
@@ -37,9 +38,9 @@ async function cargarEmergencia(slug: string): Promise<EmergenciaPublica | null>
 
 function QrInactivo() {
   return (
-    <div className="min-h-screen bg-[#0F1929] flex justify-center" style={{ fontFamily: "Inter, sans-serif" }}>
+    <div className="min-h-screen bg-[#0F1929] flex flex-col items-center" style={{ fontFamily: "Inter, sans-serif" }}>
       <PreviewNav />
-      <div className="w-full max-w-xs flex flex-col justify-center my-auto px-2 text-center">
+      <div className="w-full max-w-xs flex flex-col justify-center my-auto px-2 py-8 text-center">
         <div className="bg-[#1e2d3a] rounded-2xl p-6">
           <div className="w-14 h-14 bg-amber-500/20 rounded-2xl flex items-center justify-center mx-auto mb-4">
             <Lock className="text-amber-400" size={26} />
@@ -90,7 +91,7 @@ export default async function EmergenciaPublicaPage({
   ];
 
   return (
-    <div className="min-h-screen bg-[#0F1929] flex justify-center" style={{ fontFamily: "Inter, sans-serif" }}>
+    <div className="min-h-screen bg-[#0F1929] flex flex-col items-center" style={{ fontFamily: "Inter, sans-serif" }}>
       <PreviewNav />
       <div className="w-full max-w-sm">
         <div className="bg-red-600 px-4 py-3 text-center">
@@ -103,12 +104,6 @@ export default async function EmergenciaPublicaPage({
         </div>
 
         <div className="px-3 py-3 space-y-3">
-          <div className="bg-amber-500/15 border border-amber-500/30 rounded-xl px-4 py-3">
-            <p className="text-amber-300 text-xs font-semibold text-center leading-relaxed">
-              Solo autorizado para esta emergencia. Queda prohibido cualquier otro uso de la información.
-            </p>
-          </div>
-
           <div className="bg-white rounded-2xl p-4">
             <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-2">Persona que necesita asistencia</p>
             <h1 className="text-2xl font-black text-gray-900">{perfil.alias}</h1>
@@ -177,6 +172,14 @@ export default async function EmergenciaPublicaPage({
               ))}
             </div>
           )}
+
+          <div className="bg-amber-500/15 border border-amber-500/30 rounded-xl px-4 py-3">
+            <p className="text-amber-300 text-xs font-semibold text-center leading-relaxed">
+              Solo autorizado para esta emergencia. Queda prohibido cualquier otro uso de la información.
+            </p>
+          </div>
+
+          <AccesoMedicoDiscreto slug={slug} />
 
           <div className="text-center pb-4 pt-2 border-t border-white/10">
             <p className="text-white/60 text-xs font-semibold">AyudAPI · Ley 25.326 · Art. 34 y 108 CP</p>

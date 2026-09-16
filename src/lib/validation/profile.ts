@@ -97,6 +97,33 @@ export function esMatriculaValida(matricula: string): boolean {
   return /^[A-Za-zÁÉÍÓÚáéíóúÑñ0-9\s.\-/]+$/.test(limpio);
 }
 
+/**
+ * Detecta valores provisorios de matrícula que no identifican a un profesional
+ * real: cadenas vacías, el histórico "S/M" y los generados "PENDIENTE-XXXXXXXX".
+ * Como `matricula` es UNIQUE en base de datos, estos valores nunca deben
+ * persistirse para más de un usuario.
+ */
+export function esMatriculaProvisoria(matricula: unknown): boolean {
+  if (typeof matricula !== "string") {
+    return true;
+  }
+  const limpio = matricula.trim();
+  if (limpio.length === 0) {
+    return true;
+  }
+  const minusculas = limpio.toLowerCase();
+  return minusculas === "s/m" || minusculas.startsWith("pendiente-");
+}
+
+/**
+ * Genera una matrícula provisoria única por usuario para el alta inicial. Se
+ * reemplaza por la matrícula real en la vinculación o el completado de perfil.
+ */
+export function matriculaProvisoriaPara(usuarioId: string): string {
+  const base = usuarioId.replace(/-/g, "").slice(0, 8).toUpperCase() || "XXXXXXXX";
+  return `PENDIENTE-${base}`;
+}
+
 export function validarPerfilObligatorios(perfil: {
   alias?: unknown;
   fecha_nacimiento?: unknown;
@@ -132,4 +159,35 @@ export function perfilPacienteCompleto(perfil: {
   grupo_sanguineo?: unknown;
 }): boolean {
   return validarPerfilObligatorios(perfil).length === 0;
+}
+
+/**
+ * Valida que el perfil del médico tenga los datos obligatorios para operar de
+ * manera auditada: matrícula real (no valores provisorios como "S/M" o
+ * "PENDIENTE-XXXXXXXX"), especialidad y teléfono de contacto.
+ */
+export function perfilMedicoCompleto(perfil: {
+  especialidad?: unknown;
+  matricula?: unknown;
+  telefono_contacto?: unknown;
+}): boolean {
+  const matricula =
+    typeof perfil.matricula === "string" ? perfil.matricula.trim() : "";
+  const especialidad =
+    typeof perfil.especialidad === "string" ? perfil.especialidad.trim() : "";
+  const telefono =
+    typeof perfil.telefono_contacto === "string"
+      ? perfil.telefono_contacto.trim()
+      : "";
+
+  if (esMatriculaProvisoria(matricula)) {
+    return false;
+  }
+  if (!esMatriculaValida(matricula)) {
+    return false;
+  }
+  if (especialidad.length < 3) {
+    return false;
+  }
+  return telefono.replace(/\D/g, "").length >= 8;
 }

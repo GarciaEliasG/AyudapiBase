@@ -12,9 +12,9 @@ import {
   Shield,
   User,
 } from "lucide-react";
-import Link from "next/link";
 import { useState } from "react";
 
+import { AccesoMedicoDiscreto } from "@/components/emergency/acceso-medico-discreto";
 import { PreviewNav } from "@/components/emergency/preview-nav";
 
 const CONDICIONES_CRITICAS = [
@@ -37,7 +37,7 @@ export default function EmergencyPage() {
   const [legalExpanded, setLegalExpanded] = useState(false);
 
   return (
-    <div className="min-h-screen bg-[#0F1929] flex justify-center" style={{ fontFamily: "Inter, sans-serif" }}>
+    <div className="min-h-screen bg-[#0F1929] flex flex-col items-center" style={{ fontFamily: "Inter, sans-serif" }}>
       <PreviewNav />
       <div className="w-full max-w-sm">
         {/* Barra de emergencia (rojo reservado exclusivamente para emergencias) */}
@@ -51,12 +51,6 @@ export default function EmergencyPage() {
         </div>
 
         <div className="px-3 py-3 space-y-3">
-          <div className="bg-amber-500/15 border border-amber-500/30 rounded-xl px-4 py-3">
-            <p className="text-amber-300 text-xs font-semibold text-center leading-relaxed">
-              Solo autorizado para esta emergencia. Queda prohibido cualquier otro uso de la información.
-            </p>
-          </div>
-
           <div className="bg-white rounded-2xl p-4">
             <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-2">Persona que necesita asistencia</p>
             <div className="flex items-center gap-3">
@@ -215,6 +209,14 @@ export default function EmergencyPage() {
             </div>
           </div>
 
+          <div className="bg-amber-500/15 border border-amber-500/30 rounded-xl px-4 py-3">
+            <p className="text-amber-300 text-xs font-semibold text-center leading-relaxed">
+              Solo autorizado para esta emergencia. Queda prohibido cualquier otro uso de la información.
+            </p>
+          </div>
+
+          <AccesoMedicoDiscreto afterAuthPath="/medico/escanear" slug="demo" />
+
           <div className="text-center pb-4 pt-2 border-t border-white/10">
             <div className="flex items-center justify-center gap-1.5 mb-2">
               <div className="w-5 h-5 bg-blue-600 rounded-md flex items-center justify-center">
@@ -222,9 +224,6 @@ export default function EmergencyPage() {
               </div>
               <span className="text-white/60 text-xs font-semibold">AyudAPI · Sistema de Asistencia Médica</span>
             </div>
-            <Link className="text-xs text-emerald-400 hover:text-emerald-300 underline underline-offset-2" href="/acceso-medico">
-              Soy médico/paramédico → acceder a datos clínicos completos
-            </Link>
           </div>
         </div>
       </div>

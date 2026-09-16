@@ -72,11 +72,16 @@ export function StudyManager() {
         headers: { Authorization: `Bearer ${session.access_token}` },
         method: "POST",
       });
-      const payload = (await res.json()) as { error?: { message?: string }; message?: string };
+      const payload = (await res.json()) as { error?: { message?: string }; message?: string; perfil_creado?: boolean };
       if (!res.ok) {
         throw new Error(payload.error?.message ?? "No se pudo subir el estudio.");
       }
-      setMessage(payload.message ?? "Estudio subido correctamente.");
+      const base = payload.message ?? "Estudio subido correctamente.";
+      setMessage(
+        payload.perfil_creado
+          ? `${base} Creamos tu perfil de paciente automáticamente.`
+          : base,
+      );
       setArchivo(null);
       await loadEstudios();
     } catch (err) {
@@ -131,7 +136,7 @@ export function StudyManager() {
         <div className="border border-dashed border-gray-200 rounded-xl p-6 text-center">
           <Lock className="text-gray-300 mx-auto mb-2" size={24} />
           <p className="text-sm font-medium text-gray-600">
-            Iniciá sesión y completá tu perfil para poder adjuntar estudios médicos.
+            Iniciá sesión para poder adjuntar estudios médicos.
           </p>
         </div>
       ) : (
