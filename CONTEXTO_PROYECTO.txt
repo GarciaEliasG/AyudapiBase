@@ -1,0 +1,238 @@
+================================================================================
+AYUDAPI - CONTEXTO DEL PROYECTO (referencia rapida para IA)
+Fecha de generacion: 2026-09-17 | Rama: main (commit b5077cc)
+Descripcion: Sistema de asistencia medica de emergencia. QR personal con perfil
+  minimo vital, contactos ICE, alerta a SAME 107 / 911 y acceso medico auditado.
+================================================================================
+
+1. STACK TECNOLOGICO Y VERSIONES
+--------------------------------------------------------------------------------
+- Framework: Next.js ^15.3.0 (App Router, Server Components + Route Handlers),
+  React 18.3.1 / react-dom 18.3.1, TypeScript ^6.0.3 (proyecto usa "strict").
+- Estilos: Tailwind CSS 4.1.12 (@tailwindcss/postcss ^4.1.12), tw-animate-css,
+  tailwind-merge, class-variance-authority. UI base: shadcn/ui sobre
+  @radix-ui/* (dialog, select, tabs, etc.) en src/app/components/ui/.
+  Extra UI: MUI 7.3.5 (@mui/material + icons), motion 12.x, recharts, vaul,
+  embla-carousel, sonner (toasts), next-themes.
+- Backend/BaaS: Supabase (Auth + Postgres + Storage). Clientes:
+  @supabase/supabase-js ^2.47.0, @supabase/ssr ^0.12.7.
+- Formularios/validacion: react-hook-form 7.55.0 + validadores propios
+  (src/lib/validation/profile.ts). Fechas: date-fns 3.6.0, react-day-picker 8.
+- QR / escaner: qrcode ^1.5.4 (+ qrcode.react ^4.2.0) para generar/descargar;
+  html5-qrcode ^2.3.8 para escanear con camara (facingMode environment).
+- Seguridad: AES-256-GCM propio (node:crypto) en src/lib/security/cipher.ts
+  con CRYPTO_ENCRYPTION_KEY (hex 64 chars). Headers en next.config.mjs
+  (X-Frame-Options DENY, nosniff, referrer strict-origin-when-cross-origin).
+- Calidad: ESLint 9.39.5 + eslint-config-next, typescript-eslint 8.68.0,
+  eslint-plugin-security (warnings) y eslint-plugin-perfectionist (orden).
+  Scripts: npm run dev | build (next build) | start | lint | typecheck.
+  Requisito: Node 20.19+/22.12+/24.16+ con npm (NO pnpm). Ver DEPENDENCIAS.md.
+- Alias de imports: @/* -> ./src/* (tsconfig.json). Env: NEXT_PUBLIC_SUPABASE_URL,
+  NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY,
+  NEXT_PUBLIC_SITE_URL (se embebe en el QR), CRYPTO_ENCRYPTION_KEY.
+
+2. ARQUITECTURA Y ESTRUCTURA DE DIRECTORIOS
+--------------------------------------------------------------------------------
+- src/app/ (App Router):
+  - page.tsx: landing publica. layout.tsx: metadata + estilos globales.
+    error.tsx / loading.tsx globales.
+  - auth/callback|elegir-rol: canje codigo OAuth PKCE y vinculacion de rol.
+  - crear-perfil/ (wizard 4 pasos), mi-perfil/ (dashboard paciente Nivel 2),
+    qr-exito/ (post-generacion QR).
+  - e/[slug]/ (vista publica de emergencia, noindex, RPC anonima),
+    emergencia/ (maqueta demo estatica con datos duros, solo diseno).
+  - medico/escanear (gate + camera-scanner), medico/completar-perfil,
+    medico/paciente/[slug] (historial Nivel 3 auditado).
+  - acceso-medico/ (puerta de entrada / vinculacion rol medico),
+    buscar-paciente/, paciente/[id]/ (legacy: redirigen a /medico/escanear).
+  - institucional/ (placeholder panel institucion, pendiente DEV3).
+  - api/: Route Handlers (runtime nodejs):
+    auth/{google,login,register,estado,rol,confirmar-sesion,vincular-rol},
+    profile/ (+ paciente/asociar-institucion), estudios/ (+ [id]),
+    qr/{generate,revoke,download}, alertas/emergencia,
+    medico/{me,verificar-qr,escaneos,paciente/[slug](/estudios)},
+    usuarios/[id]/suspender.
+  - components/ui/: shadcn/ui (button, card, dialog, form, table, etc.).
+- src/components/:
+  - auth/login-modal.tsx: unico entry-point (Google OAuth login|registro).
+  - emergency/: activating-alert.tsx (boton SAME + GPS), acceso-medico-discreto.tsx,
+    preview-nav.tsx.
+  - estudios/study-manager.tsx: upload/list/preview/delete de estudios.
+  - medico/camera-scanner.tsx: escaneo QR con clasificacion de errores.
+  - layout/navbar.tsx, footer.tsx; brand/logo.tsx; shared/toggle, step-indicator.
+- src/lib/:
+  - supabase/{browser,server,database}.ts: clientes anon/admin/ssr + tipos
+    (RolUsuario, PerfilPacienteRow, PerfilMedicoRow, EstudioRow, etc.).
+  - auth/{session,registro,ruteo,destino,use-session,use-rol}.ts: sesion server,
+    provision de perfiles, redirecciones por rol, hooks cliente.
+  - validation/profile.ts: email, CUIT (11 digitos), matricula, fecha ISO,
+    grupo sanguineo, genero, perfilPacienteCompleto / perfilMedicoCompleto.
+  - qr/slug.ts: generateQrSlug(12) alfabeto sin ambiguos (sin i,l,o,0,1).
+  - security/cipher.ts: encrypt/decryptSensitiveValue (AES-256-GCM, formato v1.*).
+  - api/{client,http}.ts: fetch con Bearer + helpers.
+- src/middleware.ts: solo refresca sesion Supabase (getUser + cookies). NO hace RBAC.
+- src/styles/, src/types/styles.d.ts, src/imports/ (assets Figma).
+- supabase/schema.sql: fuente de verdad DDL + RPC + RLS (ver seccion 3).
+- Raiz: next.config.mjs, tsconfig.json, eslint.config.js, postcss.config.mjs,
+  DEPENDENCIAS.md, ATTRIBUTIONS.md, reporte-lint.json, Dev1..3/ (diagramas RF-*),
+  guidelines/Guidelines.md, ERS y DER en docx/png/pdf.
+
+3. MODELO DE DATOS Y BASE DE DATOS (SUPABASE / Postgres + PostGIS)
+--------------------------------------------------------------------------------
+Enums: rol_usuario_t (paciente|medico|institucion|admin),
+  severidad_t (Critico|Moderado|Leve), estado_incidente_t
+  (enviado|en_curso|resuelto|cancelado), tipo_estudio_t
+  (ECG|LABORATORIO|RADIOGRAFIA|RESONANCIA|TOMOGRAFIA|OTRO).
+Tablas principales:
+- roles_usuario (usuario_id FK auth.users cascade, rol, UNIQUE(usuario_id,rol)).
+  Fuente de verdad RBAC. Un usuario puede tener N roles (dual medico-paciente).
+- perfiles_paciente (usuario_id UNIQUE FK cascade; alias, nombre_completo,
+  fecha_nacimiento, genero, grupo_sanguineo, altura_cm, peso_kg,
+  alergias/patologias jsonb [{tipo,severidad,descripcion}],
+  medicacion TEXT cifrado (JSON Medicamento[]), notas_medicas TEXT cifrado,
+  contactos_emergencia jsonb [{nombre,relacion,telefono}],
+  slug_qr UNIQUE, qr_activo bool, share_location/public_profile/med_access
+  default true, obra_reports default false, trigger actualizado_en).
+- perfiles_medico (usuario_id UNIQUE FK cascade; matricula TEXT UNIQUE NOT NULL,
+  especialidad, institucion_id FK perfiles_institucion SET NULL,
+  telefono_contacto). Unicidad de matricula enforced en DB + check 409 en API.
+- perfiles_institucion (usuario_id UNIQUE; nombre, cuit, direccion, telefono,
+  email_contacto, documentacion jsonb).
+- pacientes_institucion (paciente_id FK cascade, institucion_id FK cascade,
+  obra_social, nro_afilado, validado default false, UNIQUE(paciente,institucion)).
+- tokens_qr (paciente_id FK cascade, slug UNIQUE, url_publica, activo,
+  creado_en, revocado_en). Solo 1 activo por paciente (generate revoca previos).
+- incidentes (paciente_id FK, tipo default 'same', estado, lat/lng double,
+  ubicacion geometry(Point,4326) solo si GPS exacta, timestamp).
+- escaneos_qr (token_qr_id SET NULL, paciente_id cascade, usuario_id SET NULL,
+  rol_en_momento, lat/lng, creado_en). Historial de escaneos del medico.
+- atenciones (medico_id SET NULL, paciente_id cascade, incidente_id SET NULL,
+  institucion_id, fecha, motivo, diagnostico, derivacion).
+- registros_medicos (legacy, no usado por API actual): paciente_id, medico_id,
+  grupo, medicacion_completa, estudios jsonb, observaciones.
+- estudios (paciente_id FK cascade NOT NULL, medico_id SET NULL, tipo enum,
+  descripcion, nombre_archivo, ruta_archivo en bucket privado 'estudios',
+  tamano_bytes, tipo_mime, creado_en).
+- notificaciones (incidente_id cascade, contacto jsonb, canal default 'sms',
+  estado default 'pendiente'). Se crean 'enviado' por cada contacto ICE.
+- logs_auditoria (usuario_id SET NULL, paciente_id cascade, institucion_id,
+  accion, direccion_ip, detalles jsonb). Acciones: verificar_qr,
+  acceso_historial_clinico, etc.
+Funciones SECURITY DEFINER:
+- crear_perfil_inicial(p_usuario_id, p_rol, p_datos): upsert rol + fila perfil.
+  Paciente: upsert por usuario_id. Medico: matricula provisoria unica
+  PENDIENTE-XXXXXXXX (nunca 'S/M' compartido) si no hay real; on conflict
+  (usuario_id) do nothing. Institucion: insert si no existe.
+- get_perfil_emergencia(p_slug) STABLE (GRANT anon,authenticated): JOIN
+  tokens_qr activo + qr_activo; retorna solo {alias, grupo, genero,
+  alergias/patologias filtradas severidad=Critico, contactos, share_location}.
+  Minimizacion de datos por diseno.
+- activar_alerta_emergencia(p_slug,p_lat,p_lng,p_exacta) (GRANT anon,service_role):
+  valida QR activo, INSERT incidente + ST_MakePoint si exacta, loop contactos
+  -> INSERT notificaciones, retorna {incidente_id, notificaciones}.
+- set_actualizado_en() trigger before update en perfiles_paciente.
+RLS habilitado en todas; politicas: roles_propio (select propio),
+  paciente/medico/institucion_propio (all propio), estudios_propio (via
+  perfiles_paciente.usuario_id = auth.uid()), token_qr_propio (solo tokens del
+  propio paciente), escaneos_qr insert/select propio, auditoria_propia select.
+  El acceso medico ampliado NO va por RLS sino por service_role en Route
+  Handlers con triple check (token.activo + qr_activo + med_access).
+Storage: bucket privado 'estudios' (creado on-demand), ruta
+  {paciente_id}/{uuid}.{ext}, signed URLs 300s. Restricciones clave: DNI no es
+  columna dedicada (se usa fecha/genero como identidad); unicidad real en
+  matricula (medico) y slug_qr/slug token (QR).
+
+4. FLUJOS CRITICOS IMPLEMENTADOS
+--------------------------------------------------------------------------------
+4.1 Autenticacion y RBAC dual (medico-paciente):
+- UI actual: solo Google OAuth via LoginModal (POST /api/auth/google ->
+  signInWithOAuth redirect a /auth/callback). Modo login|registro guardado en
+  sessionStorage+cookie (ayudapi:modo-google) y destino post-login
+  (ayudapi:destino-posterior). Email/password existe en API
+  (/api/auth/login|register con auto-confirmacion via admin API, sin SMTP
+  bloqueante) pero SIN UI activa.
+- Callback: canjea ?code (PKCE) o #access_token; GET /api/auth/estado (no
+  provisiona, distingue nuevo vs existente). Si roles=[] -> /auth/elegir-rol;
+  si existe -> POST /api/auth/confirmar-sesion -> rutaPorRol().
+- Fuente rol: roles_usuario leido con service_role (getRolesForUser).
+  user_metadata.app_rol es solo hint. Prioridad: admin>medico>institucion>
+  paciente. GET /api/auth/rol auto-provisiona; /estado no.
+- Vinculacion: POST /api/auth/vincular-rol (post-Google) con validacion
+  (matricula real, especialidad>=3, telefono>=8 digitos; institucion nombre>=3
+  + CUIT 11 + documentacion). Un medico recibe tambien perfil+rol paciente
+  (asegurarPerfilPaciente) para flujo dual; un paciente puede sumar rol medico
+  desde /acceso-medico sin perder el previo.
+- Ruteo (lib/auth/ruteo.ts): destino interno valido manda; sino
+  institucion->/institucional, medico->/medico/escanear (incompleto->
+  /medico/completar-perfil conservando destino), paciente-> perfil completo?
+  /mi-perfil : /crear-perfil. Destino medico sin rol -> /auth/elegir-rol?destino.
+4.2 Vista publica de emergencias /e/[slug] + acceso medico discreto:
+- Server Component: anon RPC get_perfil_emergencia. Si null -> QrInactivo (410).
+  Muestra minimo vital critico + contactos ICE (tel: sanitizado) + botones
+  SAME 107 / 911 + ActivarAlerta + aviso legal Ley 25.326.
+  /emergencia es solo demo estatica (slug "demo").
+- ActivarAlerta: geolocation opcional (3s timeout) si share_location; POST
+  /api/alertas/emergencia {slug,lat,lng,precision} con SLUG_REGEX; anon RPC
+  activar_alerta_emergencia -> muestra N contactos notificados + llamadas directas.
+- AccesoMedicoDiscreto (boton sutil pie): si rol==medico -> push
+  /medico/paciente/[slug]?origen=qr-emergencia; sino LoginModal con redirectTo
+  y fallback a elegir-rol. Auditoria real en GET /api/medico/paciente/[slug].
+- Escaner medico (camera-scanner, html5-qrcode fps:10 qrbox:240): clasifica
+  errores (permisos/sin-camara/ocupada/bloqueada/inseguro) + entrada manual slug.
+  GET /api/medico/verificar-qr?slug&lat&lng exige rol medico + triple check,
+  luego INSERT logs_auditoria + escaneos_qr. Historial en /api/medico/escaneos
+  (30 ultimos, flag disponible = qr_activo && med_access).
+4.3 Subida y gestion de estudios clinicos:
+- POST /api/estudios (multipart archivo+tipo+descripcion, Bearer):
+  asegurarPerfilPaciente (alta transparente), validaciones: tipo en lista,
+  size>0 y <=10MB (413), mime {dicom,pdf,jpeg,png} (415), extension
+  pdf/jpg/jpeg/png/dcm/dicom/dim (415), descripcion<=300. Upload a bucket
+  privado 'estudios' upsert:false; rollback storage.remove si falla insert.
+  Responde 201 {estudio, perfil_creado}.
+- GET /api/estudios: lista desc + signedUrl 300s por fila (EstudioConAcceso).
+- DELETE /api/estudios/[id]: verifica duenia (paciente_id), storage.remove
+  + delete. Sin PUT/edicion.
+- UI StudyManager (usado en crear-perfil paso 3 y mi-perfil): replica limites
+  en cliente, preview img si image/*, confirm() antes de borrar.
+4.4 Validacion de credenciales / matriculas (NO hay bypass):
+- Cliente+servidor: esMatriculaValida (trim>=4, regex alfanumerico+ ./- espacios
+  incl. acentos), esMatriculaProvisoria (""|"S/M"|"PENDIENTE-*"), CUIT 11 digitos.
+  perfilMedicoCompleto = matricula real + especialidad>=3 + telefono>=8 digitos.
+- Alta Google genera PENDIENTE-XXXXXXXX (matriculaProvisoriaPara) para no violar
+  UNIQUE; se reemplaza en vincular-rol o PUT /api/medico/me (409 si la real ya
+  la usa otro usuario_id; update si provisoria, insert si nueva, idempotente
+  si ya real).
+- Busqueda "bypass|mock|test-user|dev-mode" solo trae @playwright/test en
+  package-lock (sin uso real). Todo /api/medico/* exige Bearer + rol medico
+  (401/403). Middleware no autoriza. Para testing usar usuarios reales de
+  Supabase Auth + vincular-rol.
+
+5. ESTADO ACTUAL Y PENDIENTES
+--------------------------------------------------------------------------------
+- Ultimos commits: 4e1ba5f base dev1; 385539d base dev2/3 (sin panel
+  institucional); 3d59ca6 ESLint; 9e48a23 base medico/paciente + QR + UX;
+  b5077cc (HEAD, 35 files +2702/-568): refactor auth/perfil medico (registro.ts
+  149 lineas nuevo, ruteo/destino, validation/profile +58, session, vincular-rol,
+  confirmar-sesion, elegir-rol, callback, completar-perfil, mi-perfil, escaneo QR).
+  Patron: centralizar alta en crear_perfil_inicial + confirmarYProvisionar /
+  asegurarPerfilPaciente; tolerar perfil inexistente en estudios; rol dual.
+- Detalles tecnicos a tener en cuenta:
+  a) medicacion/notas_medicas van CIFRADAS (AES-GCM); el GET /api/profile
+     descifra con fallback JSON.parse; el historial medico las descifra en
+     servidor. Sin CRYPTO_ENCRYPTION_KEY valida todo falla.
+  b) Un solo tokens_qr.activo por paciente; revoke deja QR viejo en 410.
+     NEXT_PUBLIC_SITE_URL debe ser la URL publica real o el QR apunta mal.
+  c) RLS es restrictiva a proposito; la mayoria de reads/writes sensibles pasan
+     por service_role en Route Handlers. No abrir politicas sin auditoria.
+  d) registros_medicos y atenciones existen en schema pero sin CRUD activo;
+     historial medico Nivel 3 se arma de perfiles_paciente + estudios.
+  e) Lint: 0 errores, ~499 warnings (mayoria sort-jsx-props/imports); no bloquear
+     por warnings. DEPENDENCIAS.md prohibe subir TS 7.x / ESLint 10 / React 19.
+  f) Rutas legacy buscar-paciente y paciente/[id] solo redirigen a escanear.
+- Pendientes visibles: panel /institucional (solo placeholder), validacion
+  externa de matriculas contra colegios (hoy solo formato+unicidad), notificaciones
+  SMS reales (hoy solo INSERT 'enviado'), busqueda/derivaciones de atenciones,
+  tests automatizados (solo tipos + lint), endurecer rate-limit en
+  /api/alertas/emergencia (endpoint anonimo).
+================================================================================
+FIN

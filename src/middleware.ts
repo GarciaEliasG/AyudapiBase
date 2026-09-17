@@ -29,6 +29,26 @@ export async function middleware(request: NextRequest) {
 
   await supabase.auth.getUser();
 
+  // Rutas críticas (APIs, perfiles, panel médico, fichas QR, auth): directiva
+  // explícita anti-caché para que atrás/bfcache/cambio de usuario no sirva
+  // pantallas precargadas del usuario anterior.
+  const ruta = request.nextUrl.pathname;
+  const esCritica =
+    ruta.startsWith("/api/") ||
+    ruta.startsWith("/mi-perfil") ||
+    ruta.startsWith("/crear-perfil") ||
+    ruta.startsWith("/medico/") ||
+    ruta.startsWith("/auth/") ||
+    ruta.startsWith("/e/");
+  if (esCritica) {
+    response.headers.set(
+      "Cache-Control",
+      "no-store, no-cache, must-revalidate, private",
+    );
+    response.headers.set("Pragma", "no-cache");
+    response.headers.set("Expires", "0");
+  }
+
   return response;
 }
 

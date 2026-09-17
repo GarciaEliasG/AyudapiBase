@@ -17,6 +17,19 @@ export interface SessionUser {
   id: string;
 }
 
+/**
+ * Directivas de caché para datos sensibles (perfiles, roles, estudios, QR).
+ * Evitan que el navegador, el bfcache o un proxy intermedio sirvan pantallas
+ * o respuestas de un usuario anterior al navegar hacia atrás o cambiar de
+ * cuenta. Se aplican en `jsonOk`/`jsonError` para cubrir todos los endpoints
+ * de autenticación y perfiles sin tocar cada route handler.
+ */
+export const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, private",
+  Expires: "0",
+  Pragma: "no-cache",
+} as const;
+
 function requiredEnv(name: string): string {
   // eslint-disable-next-line security/detect-object-injection -- lectura de variables de entorno por nombre
   const value = process.env[name];
@@ -117,10 +130,10 @@ export function getBearerToken(authorization?: string | null): string | null {
 export function jsonError(message: string, status: number, details?: unknown) {
   return NextResponse.json(
     { error: { message, ...(details ? { details } : {}) } },
-    { status },
+    { status, headers: NO_STORE_HEADERS },
   );
 }
 
 export function jsonOk<T>(data: T, status = 200) {
-  return NextResponse.json(data, { status });
+  return NextResponse.json(data, { status, headers: NO_STORE_HEADERS });
 }

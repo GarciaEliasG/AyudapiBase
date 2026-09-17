@@ -35,6 +35,10 @@ import { useSession } from "@/lib/auth/use-session";
 import { createBrowserClient } from "@/lib/supabase/browser";
 import { perfilMedicoCompleto } from "@/lib/validation/profile";
 
+// Panel con datos de pacientes: render dinámico por solicitud.
+// Junto con `cache: no-store` evita historiales precargados entre médicos.
+export const dynamic = "force-dynamic";
+
 interface VerificarQrResponse {
   paciente_id: string;
   alias: string;
@@ -158,7 +162,15 @@ export default function MedicoEscanearPage() {
   const [errorCamara, setErrorCamara] = useState<ScannerErrorInfo | null>(null);
 
   useEffect(() => {
-    if (!session) return;
+    if (!session) {
+      // Sesión cerrada/cambiada: purga panel, historial y verificaciones.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- purga de seguridad ante cambio de sesión, no sincronización de estado React.
+      setMedico(null);
+      setEscaneos([]);
+      setCargandoEscaneos(false);
+      setResultado(null);
+      return;
+    }
     let active = true;
     apiFetch<PerfilMedicoResponse>("/api/medico/me", session)
       .then((res) => {
@@ -180,7 +192,13 @@ export default function MedicoEscanearPage() {
   }, [router, session]);
 
   useEffect(() => {
-    if (!session) return;
+    if (!session) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- purga de seguridad ante cambio de sesión, no sincronización de estado React.
+      setEscaneos([]);
+      setErrorEscaneos(null);
+      setCargandoEscaneos(false);
+      return;
+    }
     let activo = true;
     consultarEscaneos(session)
       .then((res) => {
@@ -241,8 +259,16 @@ export default function MedicoEscanearPage() {
   }
 
   async function cerrarSesion() {
+    // Limpieza local inmediata: evita que el siguiente usuario vea el panel,
+    // historial o resultado de verificación del médico anterior (incl. atrás).
+    setMedico(null);
+    setEscaneos([]);
+    setResultado(null);
+    setSlug("");
+    setError(null);
     await createBrowserClient().auth.signOut();
-    router.push("/");
+    router.replace("/");
+    router.refresh();
   }
 
   if (loadingSession) {

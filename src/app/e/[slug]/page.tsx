@@ -12,6 +12,11 @@ export const metadata: Metadata = {
   title: "Perfil de emergencia · AyudAPI",
 };
 
+// Ficha de emergencia revocable: debe reflejar la revocación al instante y
+// nunca servirse desde caché (navegación atrás incluida).
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 interface EmergenciaPublica {
   alias: string;
   alergias?: Array<{ descripcion?: string; severidad?: string; tipo?: string }>;

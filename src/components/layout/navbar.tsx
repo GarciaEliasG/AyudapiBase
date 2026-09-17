@@ -2,7 +2,7 @@
 
 import { LogIn, LogOut, Menu, Stethoscope, X } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { LoginModal } from "@/components/auth/login-modal";
@@ -19,6 +19,7 @@ interface NavLink {
 
 export function Navbar() {
   const pathname = usePathname();
+  const router = useRouter();
   const { loading, rol, session } = useRol();
   const [menuOpen, setMenuOpen] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
@@ -41,6 +42,11 @@ export function Navbar() {
   async function handleLogout() {
     setMenuOpen(false);
     await createBrowserClient().auth.signOut();
+    // onAuthStateChange ya limpia la sesión y el storage pendiente; aquí se
+    // fuerza la salida del área protegida y la revalidación del router para
+    // que el botón atrás no muestre pantallas precargadas del usuario previo.
+    router.replace("/");
+    router.refresh();
   }
 
   function linkClase(href: string) {
@@ -61,7 +67,12 @@ export function Navbar() {
           {/* Navegación de escritorio */}
           <div className="hidden items-center gap-6 text-sm font-medium text-gray-600 md:flex">
             {linksVisibles.map((link) => (
-              <Link className={linkClase(link.href)} href={link.href} key={link.href}>
+              <Link
+                className={linkClase(link.href)}
+                href={link.href}
+                key={link.href}
+                prefetch={false}
+              >
                 {link.label}
               </Link>
             ))}
@@ -78,6 +89,7 @@ export function Navbar() {
                 <Link
                   className="hidden items-center gap-2 text-sm font-medium text-gray-600 hover:text-gray-900 sm:flex"
                   href="/mi-perfil"
+                  prefetch={false}
                 >
                   <span className="h-7 w-7 rounded-full bg-blue-100 flex items-center justify-center">
                     <span className="text-xs font-bold text-blue-700">
@@ -97,6 +109,7 @@ export function Navbar() {
                   <Link
                     className="hidden md:inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
                     href="/medico/escanear"
+                    prefetch={false}
                   >
                     <Stethoscope size={15} /> Panel médico
                   </Link>
@@ -143,6 +156,7 @@ export function Navbar() {
                   href={link.href}
                   key={link.href}
                   onClick={() => setMenuOpen(false)}
+                  prefetch={false}
                 >
                   {link.label}
                 </Link>
@@ -158,6 +172,7 @@ export function Navbar() {
                     className="block rounded-lg px-3 py-2.5 text-sm font-semibold bg-blue-600 text-white text-center hover:bg-blue-700 transition-colors"
                     href={esMedico ? "/medico/escanear" : "/crear-perfil"}
                     onClick={() => setMenuOpen(false)}
+                    prefetch={false}
                   >
                     {esMedico ? "Abrir panel médico" : rolInstitucion ? "Administrar perfil" : "Editar perfil"}
                   </Link>

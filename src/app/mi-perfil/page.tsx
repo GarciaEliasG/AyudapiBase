@@ -27,6 +27,12 @@ import { apiFetch } from "@/lib/api/client";
 import { useSession } from "@/lib/auth/use-session";
 import { cn } from "@/lib/utils";
 
+// Perfil clínico del usuario actual: nunca cachear. La protección efectiva es
+// `apiFetch` (cache: no-store) + `Cache-Control: no-store` (middleware,
+// next.config y respuestas del API), más la purga de estado al perder sesión,
+// para que atrás/cambio de usuario no muestre datos del anterior.
+export const dynamic = "force-dynamic";
+
 interface PerfilResponse {
   perfil: PerfilPacienteRow & { medicacion: Medicamento[] | null; notas_medicas: string | null };
   perfil_medico: PerfilMedicoRow | null;
@@ -44,7 +50,15 @@ export default function MiPerfilPage() {
   const [showLogin, setShowLogin] = useState(false);
 
   useEffect(() => {
-    if (!session) return;
+    // Sin sesión no hay datos: purga inmediata para evitar mostrar el perfil
+    // del usuario anterior al cerrar sesión o cambiar de cuenta.
+    if (!session) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- purga de seguridad ante cambio de sesión, no sincronización de estado React.
+      setData(null);
+      setError(null);
+      setMessage(null);
+      return;
+    }
     let activo = true;
     apiFetch<PerfilResponse>("/api/profile", session)
       .then((res) => {
@@ -223,14 +237,17 @@ export default function MiPerfilPage() {
                 <p className="font-semibold text-gray-900 text-sm break-all">{data.perfil_medico?.matricula ?? "—"}</p>
               </div>
               <div className="bg-gray-50 rounded-xl py-3">
-                <p className="text-xs text-gray-400">Especialidad</p>
-                <p className="font-semibold text-gray-900 text-sm">{data.perfil_medico?.especialidad ?? "—"}</p>
+                <p className="text-xs text-gray-400">DNI · Jurisdicción</p>
+                <p className="font-semibold text-gray-900 text-sm">{data.perfil_medico?.dni ?? "—"} · {data.perfil_medico?.jurisdiccion ?? "—"}</p>
               </div>
               <div className="bg-gray-50 rounded-xl py-3">
                 <p className="text-xs text-gray-400">Contacto</p>
                 <p className="font-semibold text-gray-900 text-sm">{data.perfil_medico?.telefono_contacto ?? "—"}</p>
               </div>
             </div>
+            <p className="text-xs text-gray-400 mb-4 text-center">
+              Verificación SISA: {data.perfil_medico?.estado_verificacion ?? "pendiente"} · Especialidad: {data.perfil_medico?.especialidad ?? "—"}
+            </p>
             <Link
               className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold py-2.5 rounded-lg transition-colors"
               href="/medico/escanear"
@@ -248,7 +265,7 @@ export default function MiPerfilPage() {
             <div className="flex-1">
               <h2 className="font-bold text-gray-900">{perfil?.alias ?? "Cargando..."}</h2>
               <p className="text-sm text-gray-500">
-                {perfil?.nombre_completo ?? "Nombre no cargado"} · {perfil?.genero ?? "—"} · {perfil?.grupo_sanguineo ?? "Grupo s/n"}
+                {perfil?.nombre_completo ?? "Nombre no cargado"} · {perfil?.genero ?? "—"} · {perfil?.grupo_sanguineo ?? "Grupo s/n"} · DNI {perfil?.dni ?? "—"}
               </p>
             </div>
           </div>

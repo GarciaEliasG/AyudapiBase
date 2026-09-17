@@ -13,9 +13,11 @@ import {
   jsonError,
   jsonOk,
 } from "@/lib/auth/session";
+import { verificarDniGlobal } from "@/lib/auth/verificacion-medico";
 import { decryptSensitiveValue, encryptSensitiveValue } from "@/lib/security/cipher";
 import { createAdminServerClient } from "@/lib/supabase/server";
-import { normalizarFecha, validarPerfilObligatorios } from "@/lib/validation/profile";
+import { esTelefonoValido, normalizarFecha, validarPerfilObligatorios } from "@/lib/validation/profile";
+import { detalle400DesdeZod, dniSchema, MENSAJE_DNI_DUPLICADO } from "@/lib/validation/schemas";
 
 export const runtime = "nodejs";
 
@@ -176,11 +178,41 @@ export async function PUT(req: Request) {
     grupo_sanguineo: grupoSanguineo,
   });
 
+  // DNI obligatorio y estricto (SISA): 7-8 dígitos, sin puntos ni letras.
+  const dniParse = dniSchema.safeParse(input.dni);
+  if (!dniParse.success) {
+    const { detalles, mensaje } = detalle400DesdeZod(dniParse.error);
+    return jsonError(mensaje, 400, detalles);
+  }
+  const dni = dniParse.data.trim();
+
+  if (
+    input.telefono_contacto !== undefined &&
+    input.telefono_contacto !== null &&
+    String(input.telefono_contacto).trim().length > 0 &&
+    !esTelefonoValido(input.telefono_contacto)
+  ) {
+    return jsonError(
+      "Datos inválidos. telefono_contacto: El teléfono debe contener entre 8 y 15 dígitos.",
+      400,
+      [{ campo: "telefono_contacto", mensaje: "El teléfono debe contener entre 8 y 15 dígitos." }],
+    );
+  }
+
   if (errores.length > 0) {
     return jsonError(`Completá los campos obligatorios: ${errores.join(" ")}`, 400);
   }
 
   const admin = createAdminServerClient();
+
+  // Unicidad global del DNI (una sola cuenta por DNI): 409 si otra cuenta lo usa.
+  const dniRes = await verificarDniGlobal(admin, { dni, usuarioId: user.id });
+  if (dniRes.error) {
+    return jsonError("No se pudo verificar el DNI. Reintentá.", 500, dniRes.error.code);
+  }
+  if (dniRes.conflicto) {
+    return jsonError(dniRes.conflicto ?? MENSAJE_DNI_DUPLICADO, 409);
+  }
   const { data: fila, error: filaError } = await admin
     .from("perfiles_paciente")
     .select("id")
@@ -192,10 +224,16 @@ export async function PUT(req: Request) {
 
   const payload: Record<string, unknown> = {
     alias,
+    dni,
     fecha_nacimiento: fechaNacimiento,
     genero: genero || null,
     grupo_sanguineo: grupoSanguineo || null,
   };
+
+  if (input.telefono_contacto !== undefined) {
+    const tel = String(input.telefono_contacto ?? "").trim();
+    payload.telefono_contacto = tel.length > 0 ? tel : null;
+  }
 
   if (input.nombre_completo !== undefined) {
     payload.nombre_completo = input.nombre_completo;
@@ -244,6 +282,9 @@ export async function PUT(req: Request) {
       .update(payload)
       .eq("id", fila.id);
     if (error) {
+      if (error.code === "23505") {
+        return jsonError(MENSAJE_DNI_DUPLICADO, 409);
+      }
       return jsonError(error.message, 500, error.code);
     }
   } else {
@@ -252,6 +293,9 @@ export async function PUT(req: Request) {
       usuario_id: user.id,
     });
     if (error) {
+      if (error.code === "23505") {
+        return jsonError(MENSAJE_DNI_DUPLICADO, 409);
+      }
       return jsonError(error.message, 500, error.code);
     }
   }

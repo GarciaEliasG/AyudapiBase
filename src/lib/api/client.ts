@@ -24,7 +24,14 @@ export async function apiFetch<T>(
     headers.set("Content-Type", "application/json");
   }
 
-  const res = await fetch(path, { ...init, headers });
+  const res = await fetch(path, {
+    // Datos clínicos/sesión: nunca servir desde caché del navegador.
+    // Evita pantallas precargadas del usuario anterior al ir atrás o
+    // cambiar de cuenta. Se puede sobrescribir pasando `cache` en `init`.
+    cache: "no-store",
+    ...init,
+    headers,
+  });
   const payload = (await res.json().catch(() => null)) as {
     error?: { message?: string };
   } | null;

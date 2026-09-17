@@ -2,6 +2,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { RolUsuario } from "@/lib/supabase/database";
 
+import {
+  CODIGO_BYPASS_REQUERIDO,
+  motivoBloqueoMatriculaDePrueba,
+} from "@/lib/auth/dev-bypass";
 import { getRolesForUser, type SessionUser } from "@/lib/auth/session";
 import {
   esMatriculaProvisoria,
@@ -65,6 +69,18 @@ export async function confirmarYProvisionar(
       ...(appDatos ?? {}),
       email: usuario.email,
     };
+
+    // Guard central del bypass: ningún alta (register, confirmar-sesion,
+    // auto-provisión) puede persistir una matrícula de prueba sin un email
+    // autorizado en `DEV_ADMIN_EMAILS`. Falla cerrado con 403 en el borde.
+    if (rolFinal === "medico") {
+      const bloqueo = motivoBloqueoMatriculaDePrueba(usuario.email, datosFinales.matricula);
+      if (bloqueo) {
+        const error = new Error(bloqueo) as Error & { code?: string };
+        error.code = CODIGO_BYPASS_REQUERIDO;
+        throw error;
+      }
+    }
 
     // `matricula` es UNIQUE: un valor provisorio compartido ("S/M", vacío)
     // rompería el alta del segundo médico. Se genera uno único por usuario que

@@ -16,6 +16,14 @@ export const MODO_GOOGLE_KEY = "ayudapi:modo-google";
 
 const CLAVE_COOKIE_MODO = "ayudapi:modo-google";
 
+/**
+ * Ventana de validez de la bandera de modo (segundos). Cubre el viaje de ida
+ * y vuelta al proveedor OAuth. La cookie persistente (con `max-age`) es el
+ * respaldo si `sessionStorage` se pierde (p. ej. restauración de pestaña);
+ * `sessionStorage` sigue siendo la fuente primaria.
+ */
+const MAX_AGE_MODO_SEGUNDOS = 600;
+
 function leerCookieModo(): string | null {
   try {
     const patron = new RegExp(`(?:^|; )${CLAVE_COOKIE_MODO}=([^;]+)`);
@@ -28,7 +36,9 @@ function leerCookieModo(): string | null {
 
 /**
  * Guarda la opción elegida ("Iniciar sesión con Google" o "Crear cuenta con
- * Google") para que el callback la conozca al volver del proveedor.
+ * Google") para que el callback la conozca al volver del proveedor. Se
+ * persiste de forma redundante en `sessionStorage` (fuente primaria) y en
+ * cookie persistente de corta vida (respaldo ante pérdida del storage).
  */
 export function guardarModoGoogle(modo: ModoGoogle): void {
   if (typeof document === "undefined") {
@@ -36,7 +46,7 @@ export function guardarModoGoogle(modo: ModoGoogle): void {
   }
   try {
     window.sessionStorage.setItem(MODO_GOOGLE_KEY, modo);
-    document.cookie = `${CLAVE_COOKIE_MODO}=${encodeURIComponent(modo)}; path=/; SameSite=Lax`;
+    document.cookie = `${CLAVE_COOKIE_MODO}=${encodeURIComponent(modo)}; path=/; max-age=${MAX_AGE_MODO_SEGUNDOS}; SameSite=Lax`;
   } catch {
     // El flujo continúa igual; el modo por defecto es "login".
   }

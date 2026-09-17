@@ -47,6 +47,8 @@ create table if not exists public.perfiles_paciente (
   id                   uuid primary key default gen_random_uuid(),
   usuario_id           uuid not null unique references auth.users(id) on delete cascade,
   alias                text not null default '',
+  dni                  text,
+  telefono_contacto    text,
   nombre_completo      text,
   fecha_nacimiento     date,
   genero               text,
@@ -222,10 +224,12 @@ begin
   on conflict (usuario_id, rol) do nothing;
 
   if p_rol = 'paciente' then
-    insert into public.perfiles_paciente (usuario_id, alias, nombre_completo, fecha_nacimiento, genero, grupo_sanguineo)
+    insert into public.perfiles_paciente (usuario_id, alias, dni, telefono_contacto, nombre_completo, fecha_nacimiento, genero, grupo_sanguineo)
     values (
       p_usuario_id,
       coalesce(p_datos->>'alias', p_datos->>'nombre_completo', 'Paciente'),
+      nullif(p_datos->>'dni', ''),
+      nullif(p_datos->>'telefono_contacto', ''),
       p_datos->>'nombre_completo',
       nullif(p_datos->>'fecha_nacimiento', '')::date,
       p_datos->>'genero',
@@ -233,6 +237,8 @@ begin
     )
     on conflict (usuario_id) do update set
       alias = excluded.alias,
+      dni = coalesce(excluded.dni, public.perfiles_paciente.dni),
+      telefono_contacto = coalesce(excluded.telefono_contacto, public.perfiles_paciente.telefono_contacto),
       nombre_completo = coalesce(excluded.nombre_completo, public.perfiles_paciente.nombre_completo),
       fecha_nacimiento = coalesce(excluded.fecha_nacimiento, public.perfiles_paciente.fecha_nacimiento),
       genero = coalesce(excluded.genero, public.perfiles_paciente.genero),
@@ -242,7 +248,9 @@ begin
     -- `matricula` es UNIQUE: nunca se persiste un provisorio compartido
     -- ("S/M"). Sin matrícula real se genera una provisoria única por usuario
     -- que luego se reemplaza en la vinculación o el completado de perfil.
-    insert into public.perfiles_medico (usuario_id, matricula, especialidad, telefono_contacto)
+    -- Persiste además DNI, jurisdicción y estado de verificación SISA cuando
+    -- viajan en `p_datos` (alta por email/contraseña y OAuth).
+    insert into public.perfiles_medico (usuario_id, matricula, especialidad, telefono_contacto, dni, jurisdiccion, estado_verificacion)
     values (
       p_usuario_id,
       coalesce(
@@ -250,14 +258,17 @@ begin
           case lower(coalesce(p_datos->>'matricula', ''))
             when '' then null
             when 's/m' then null
-            else p_datos->>'matricula'
+            else upper(p_datos->>'matricula')
           end,
           ''
         ),
         'PENDIENTE-' || upper(left(replace(p_usuario_id::text, '-', ''), 8))
       ),
       p_datos->>'especialidad',
-      p_datos->>'telefono_contacto'
+      p_datos->>'telefono_contacto',
+      nullif(p_datos->>'dni', ''),
+      nullif(upper(p_datos->>'jurisdiccion'), ''),
+      coalesce(nullif(p_datos->>'estado_verificacion', ''), 'pendiente')
     )
     on conflict (usuario_id) do nothing;
 
@@ -428,3 +439,89 @@ create policy "escaneos_qr_propios" on public.escaneos_qr for select
 drop policy if exists "auditoria_propia" on public.logs_auditoria;
 create policy "auditoria_propia" on public.logs_auditoria for select
   using (auth.uid() = usuario_id);
+
+-- =============================================================================
+-- Migración: validación estricta de médicos (jurisdicción + DNI + verificación)
+-- Idempotente: seguro re-ejecutar. El código hace fallback a solo `matricula`
+-- si estas columnas aún no se aplicaron en el entorno.
+-- =============================================================================
+alter table public.perfiles_medico
+  add column if not exists jurisdiccion text,
+  add column if not exists dni text,
+  add column if not exists estado_verificacion text not null default 'pendiente';
+
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'perfiles_medico_estado_verificacion_check'
+  ) then
+    alter table public.perfiles_medico
+      add constraint perfiles_medico_estado_verificacion_check
+      check (estado_verificacion in ('pendiente', 'verificado', 'rechazado'));
+  end if;
+end $$;
+
+-- DNI único entre profesionales (solo cuando está informado).
+create unique index if not exists perfiles_medico_dni_key
+  on public.perfiles_medico (dni) where dni is not null;
+
+-- Compuesta matrícula+jurisdicción (la unicidad de `matricula` ya la cubre;
+-- este índice acelera la verificación previa del 409 descriptivo).
+create unique index if not exists perfiles_medico_matricula_jurisdiccion_key
+  on public.perfiles_medico (matricula, jurisdiccion);
+
+-- =============================================================================
+-- Endurecimiento SISA/REFEPS: DNI obligatorio y único + padrón de profesionales
+-- Idempotente: seguro re-ejecutar.
+-- =============================================================================
+
+-- DNI del paciente (una sola cuenta por DNI en todo el sistema).
+alter table public.perfiles_paciente
+  add column if not exists dni text,
+  add column if not exists telefono_contacto text;
+
+create unique index if not exists perfiles_paciente_dni_key
+  on public.perfiles_paciente (dni) where dni is not null;
+
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'perfiles_paciente_dni_formato_check'
+  ) then
+    alter table public.perfiles_paciente
+      add constraint perfiles_paciente_dni_formato_check
+      check (dni is null or dni ~ '^\d{7,8}$');
+  end if;
+end $$;
+
+-- Formato estricto del DNI del profesional (7 u 8 dígitos, sin puntos/letras).
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'perfiles_medico_dni_formato_check'
+  ) then
+    alter table public.perfiles_medico
+      add constraint perfiles_medico_dni_formato_check
+      check (dni is null or dni ~ '^\d{7,8}$');
+  end if;
+end $$;
+
+-- Padrón oficial de profesionales (SISA/REFEPS). Fuente de verdad para la
+-- verificación formal del trío (DNI, matrícula, jurisdicción). Sembrar con
+-- los colegios profesionales; en local/CI puede reemplazarse con la variable
+-- `SISA_PADRON_JSON` (ver `src/lib/auth/sisa.ts`).
+create table if not exists public.padron_profesionales (
+  id           uuid primary key default gen_random_uuid(),
+  dni          text not null check (dni ~ '^\d{7,8}$'),
+  matricula    text not null,
+  jurisdiccion text not null,
+  apellido     text,
+  nombre       text,
+  especialidad text,
+  activo       boolean not null default true,
+  creado_en    timestamptz not null default now(),
+  unique (dni, matricula, jurisdiccion)
+);
+
+alter table public.padron_profesionales enable row level security;
+
+drop policy if exists "padron_sin_acceso_anon" on public.padron_profesionales;
+-- Sin políticas de lectura para roles públicos: solo `service_role` (bypass
+-- RLS) lo consulta desde las rutas de verificación. Bloqueo total por defecto.

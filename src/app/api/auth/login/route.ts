@@ -1,7 +1,13 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+
 import { parseJsonBody } from "@/lib/api/http";
+import { ipDeRequest, registrarActividadSesion } from "@/lib/auth/actividad-servidor";
+import { isDevBypassActiveFor } from "@/lib/auth/dev-bypass";
 import { jsonError, jsonOk } from "@/lib/auth/session";
 import { createAdminServerClient, createAnonServerClient } from "@/lib/supabase/server";
+import { esMatriculaProvisoria, esMatriculaDePrueba } from "@/lib/validation/profile";
 import { esEmailValido } from "@/lib/validation/profile";
+import { MENSAJE_BYPASS_DENEGADO, MENSAJE_SISA } from "@/lib/validation/schemas";
 
 export const runtime = "nodejs";
 
@@ -22,12 +28,69 @@ function esEmailNoConfirmado(mensaje: string): boolean {
 }
 
 /**
+ * Bloqueo terminante del panel médico (regla de oro de seguridad):
+ * un usuario con rol `medico` cuya credencial no esté verificada contra el
+ * padrón SISA (ni bypass autorizado con `DEV_ADMIN_EMAILS`) no puede iniciar
+ * sesión como médico → HTTP 403. Casos:
+ * - Matrícula `TEST-...` sin bypass → 403 (canal de prueba exclusivo dev).
+ * - `estado_verificacion !== "verificado"` sin bypass → 403 ("Médico no
+ *   registrado…"), debe regularizar su matrícula real.
+ * - Sin fila o con matrícula provisoria → se permite (debe completar el alta
+ *   en `/medico/completar-perfil` o `/api/auth/vincular-rol`, donde rige el
+ *   mismo rigor). Falla abierto solo hacia la regularización, nunca al panel.
+ */
+async function bloqueoPanelMedico(
+  admin: SupabaseClient,
+  usuarioId: string,
+  email: string | null,
+): Promise<Response | null> {
+  const { data: roles } = await admin
+    .from("roles_usuario")
+    .select("rol")
+    .eq("usuario_id", usuarioId);
+  const esMedico = (roles ?? []).some(
+    (r) => (r as { rol?: string }).rol === "medico",
+  );
+  if (!esMedico) {
+    return null;
+  }
+  const bypass = isDevBypassActiveFor(email);
+  const { data: perfil } = await admin
+    .from("perfiles_medico")
+    .select("matricula, estado_verificacion")
+    .eq("usuario_id", usuarioId)
+    .maybeSingle();
+  if (!perfil) {
+    return null;
+  }
+  const matricula =
+    typeof (perfil as { matricula?: unknown }).matricula === "string"
+      ? String((perfil as { matricula?: unknown }).matricula)
+      : "";
+  // Sin credencial real todavía: a completar el alta (mismo rigor allí).
+  if (esMatriculaProvisoria(matricula) || matricula.trim().length === 0) {
+    return null;
+  }
+  if (esMatriculaDePrueba(matricula) && !bypass) {
+    return jsonError(MENSAJE_BYPASS_DENEGADO, 403);
+  }
+  const estado = (perfil as { estado_verificacion?: unknown }).estado_verificacion;
+  if (!bypass && estado !== "verificado") {
+    return jsonError(MENSAJE_SISA, 403);
+  }
+  return null;
+}
+
+/**
  * Login por email y contraseña.
  *
  * Si la cuenta existe pero aparece como "email no confirmado" (p. ej. cuentas
  * creadas antes de simplificar el flujo, o con SMTP sin despachar), se confirma
  * en el servidor y se reintenta el inicio de sesión de inmediato. Así ninguna
  * cuenta real queda inhabilitada por depender de un correo que no llega.
+ *
+ * El acceso como médico exige credencial verificada (SISA o bypass
+ * autorizado); de lo contrario se responde 403 e impide el panel médico.
  */
 export async function POST(req: Request) {
   const parsed = await parseJsonBody<LoginRequest>(req);
@@ -72,15 +135,48 @@ export async function POST(req: Request) {
     }
 
     const reintento = await anon.auth.signInWithPassword({ email, password });
-    if (reintento.error || !reintento.data.session) {
+    if (reintento.error || !reintento.data.session || !reintento.data.user) {
       return jsonError("Email o contraseña incorrectos.", 401);
     }
+    const bloqueo = await bloqueoPanelMedico(
+      admin,
+      reintento.data.user.id,
+      reintento.data.user.email ?? email,
+    );
+    if (bloqueo) {
+      return bloqueo;
+    }
+    await registrarActividadSesion(admin, {
+      accion: "inicio_sesion",
+      detalles: { canal: "login-email" },
+      direccionIp: ipDeRequest(req),
+      email: reintento.data.user.email ?? email,
+      usuarioId: reintento.data.user.id,
+    });
     return jsonOk({ session: tokensDe(reintento.data.session) });
   }
 
   if (error || !data.session) {
     return jsonError("Email o contraseña incorrectos.", 401);
   }
+
+  const adminFinal = createAdminServerClient();
+  const bloqueo = await bloqueoPanelMedico(
+    adminFinal,
+    data.user.id,
+    data.user.email ?? email,
+  );
+  if (bloqueo) {
+    return bloqueo;
+  }
+
+  await registrarActividadSesion(adminFinal, {
+    accion: "inicio_sesion",
+    detalles: { canal: "login-email" },
+    direccionIp: ipDeRequest(req),
+    email: data.user.email ?? email,
+    usuarioId: data.user.id,
+  });
 
   return jsonOk({ session: tokensDe(data.session) });
 }

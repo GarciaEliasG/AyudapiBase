@@ -89,12 +89,208 @@ export function esCuitValido(cuit: string): boolean {
   return digitos.length === 11;
 }
 
+/**
+ * Estándar SISA/REFEPS — validación estricta de identidad y credenciales.
+ * El DNI es obligatorio y debe ser exactamente 7 u 8 dígitos numéricos, sin
+ * puntos, espacios ni letras. Nada de tolerancias: "30.123.456" o "ABC1234"
+ * son inválidos y deben responder HTTP 400 con el campo detallado.
+ */
+export const DNI_REGEX_ESTRICTO = /^\d{7,8}$/;
+
+export function esDniEstrictoValido(dni: unknown): boolean {
+  if (typeof dni !== "string" && typeof dni !== "number") {
+    return false;
+  }
+  return DNI_REGEX_ESTRICTO.test(String(dni).trim());
+}
+
+/**
+ * Jurisdicciones emisoras reconocidas por SISA/REFEPS (canónico en
+ * mayúsculas, sin acentos). El alta médica exige una de estas: "NACIONAL"
+ * (matrícula nacional) o la provincia emisora.
+ */
+export const JURISDICCIONES_SISA = [
+  "NACIONAL",
+  "CABA",
+  "BUENOS AIRES",
+  "CATAMARCA",
+  "CHACO",
+  "CHUBUT",
+  "CORDOBA",
+  "CORRIENTES",
+  "ENTRE RIOS",
+  "FORMOSA",
+  "JUJUY",
+  "LA PAMPA",
+  "LA RIOJA",
+  "MENDOZA",
+  "MISIONES",
+  "NEUQUEN",
+  "RIO NEGRO",
+  "SALTA",
+  "SAN JUAN",
+  "SAN LUIS",
+  "SANTA CRUZ",
+  "SANTA FE",
+  "SANTIAGO DEL ESTERO",
+  "TIERRA DEL FUEGO",
+  "TUCUMAN",
+] as const;
+
+export type JurisdiccionSisa = (typeof JURISDICCIONES_SISA)[number];
+
+function sinAcentos(mayusculas: string): string {
+  return mayusculas
+    .replace(/Á/g, "A")
+    .replace(/É/g, "E")
+    .replace(/Í/g, "I")
+    .replace(/Ó/g, "O")
+    .replace(/Ú/g, "U")
+    .replace(/Ü/g, "U");
+}
+
+/** Normaliza jurisdicción al canónico SISA (mayúsculas, sin acentos). */
+export function normalizarJurisdiccionSisa(jurisdiccion: unknown): string | null {
+  if (typeof jurisdiccion !== "string") {
+    return null;
+  }
+  const limpio = sinAcentos(jurisdiccion.trim().toUpperCase()).replace(/\s+/g, " ");
+  return limpio.length > 0 ? limpio : null;
+}
+
+/** `true` solo si la jurisdicción pertenece al padrón oficial SISA/REFEPS. */
+export function esJurisdiccionSisaValida(jurisdiccion: unknown): boolean {
+  const normalizada = normalizarJurisdiccionSisa(jurisdiccion);
+  if (!normalizada) {
+    return false;
+  }
+  return (JURISDICCIONES_SISA as readonly string[]).includes(normalizada);
+}
+
+/**
+ * Matrícula profesional real (no de prueba): 4 a 8 dígitos, con o sin
+ * prefijo de tipo (MN/MP/ME). Ej: "123456", "MN 123456", "MP-123456".
+ * "MP 1234" cumple el formato pero igual debe pasar la verificación SISA;
+ * el formato solo no habilita.
+ */
+// eslint-disable-next-line security/detect-unsafe-regex -- prefijo opcional acotado + 4-8 dígitos: tiempo lineal, sin backtracking anidado.
+export const MATRICULA_REAL_REGEX = /^(?:(?:MN|MP|ME)[\s.-]?)?[0-9]{4,8}$/;
+
+export function esMatriculaRealValida(matricula: unknown): boolean {
+  if (typeof matricula !== "string") {
+    return false;
+  }
+  return MATRICULA_REAL_REGEX.test(matricula.trim().toUpperCase());
+}
+
+/** Matrícula de prueba del bypass (`TEST-...`, 1 a 20 alfanuméricos/guiones). */
+export const MATRICULA_PRUEBA_REGEX = /^TEST-[A-Z0-9-]{1,20}$/;
+
+export function esMatriculaPruebaValida(matricula: unknown): boolean {
+  if (typeof matricula !== "string") {
+    return false;
+  }
+  return MATRICULA_PRUEBA_REGEX.test(matricula.trim().toUpperCase());
+}
+
+/**
+ * Teléfono de contacto argentino: se admiten `+`, espacios, guiones,
+ * paréntesis y puntos, pero debe contener entre 8 y 15 dígitos.
+ */
+export function esTelefonoValido(telefono: unknown): boolean {
+  if (typeof telefono !== "string" && typeof telefono !== "number") {
+    return false;
+  }
+  const texto = String(telefono).trim();
+  if (!/^[+\d][\d\s()./-]*$/.test(texto)) {
+    return false;
+  }
+  const digitos = texto.replace(/\D/g, "");
+  return digitos.length >= 8 && digitos.length <= 15;
+}
+
+export function normalizarTelefono(telefono: unknown): string | null {
+  if (typeof telefono !== "string" && typeof telefono !== "number") {
+    return null;
+  }
+  const texto = String(telefono).trim();
+  return texto.length > 0 ? texto : null;
+}
+
 export function esMatriculaValida(matricula: string): boolean {
   const limpio = matricula.trim();
   if (limpio.length < 4) {
     return false;
   }
   return /^[A-Za-zÁÉÍÓÚáéíóúÑñ0-9\s.\-/]+$/.test(limpio);
+}
+
+/** Normaliza matrícula para comparar/persistir (trim + mayúsculas). */
+export function normalizarMatricula(matricula: unknown): string {
+  return typeof matricula === "string" ? matricula.trim().toUpperCase() : "";
+}
+
+/** Matrículas de prueba del modo bypass (`TEST-...`, case-insensitive). */
+export function esMatriculaDePrueba(matricula: unknown): boolean {
+  if (typeof matricula !== "string") {
+    return false;
+  }
+  return matricula.trim().toUpperCase().startsWith("TEST-");
+}
+
+/**
+ * Jurisdicción emisora de la matrícula (opcional). Vacío = válido (no
+ * informado). Con valor: 2 a 32 caracteres alfabéticos/espacios/puntos.
+ */
+export function esJurisdiccionValida(jurisdiccion: unknown): boolean {
+  if (jurisdiccion === undefined || jurisdiccion === null) {
+    return true;
+  }
+  if (typeof jurisdiccion !== "string") {
+    return false;
+  }
+  const limpio = jurisdiccion.trim();
+  if (limpio.length === 0) {
+    return true;
+  }
+  if (limpio.length < 2 || limpio.length > 32) {
+    return false;
+  }
+  return /^[A-Za-zÁÉÍÓÚáéíóúÑñ\s.\-/]+$/.test(limpio);
+}
+
+export function normalizarJurisdiccion(jurisdiccion: unknown): string | null {
+  if (typeof jurisdiccion !== "string") {
+    return null;
+  }
+  const limpio = jurisdiccion.trim().toUpperCase();
+  return limpio.length > 0 ? limpio : null;
+}
+
+/**
+ * DNI argentino (opcional). Vacío = válido (no informado). Con valor: 7 u 8
+ * dígitos (se toleran puntos/espacios/guiones al ingresarlo).
+ */
+export function esDniValido(dni: unknown): boolean {
+  if (dni === undefined || dni === null) {
+    return true;
+  }
+  if (typeof dni !== "string" && typeof dni !== "number") {
+    return false;
+  }
+  const digitos = String(dni).replace(/\D/g, "");
+  if (digitos.length === 0) {
+    return true;
+  }
+  return digitos.length === 7 || digitos.length === 8;
+}
+
+export function normalizarDni(dni: unknown): string | null {
+  if (typeof dni !== "string" && typeof dni !== "number") {
+    return null;
+  }
+  const digitos = String(dni).replace(/\D/g, "");
+  return digitos.length > 0 ? digitos : null;
 }
 
 /**

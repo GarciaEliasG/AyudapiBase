@@ -10,7 +10,15 @@ import type { PerfilMedicoRow, RolUsuario } from "@/lib/supabase/database";
 import { ApiError, apiFetch } from "@/lib/api/client";
 import { RUTA_DESTINO_KEY } from "@/lib/auth/destino";
 import { useRol } from "@/lib/auth/use-rol";
-import { esMatriculaProvisoria, esMatriculaValida } from "@/lib/validation/profile";
+import {
+  esDniEstrictoValido,
+  esJurisdiccionSisaValida,
+  esMatriculaDePrueba,
+  esMatriculaProvisoria,
+  esMatriculaRealValida,
+  esTelefonoValido,
+  JURISDICCIONES_SISA,
+} from "@/lib/validation/profile";
 
 interface VincularRespuesta {
   rol: RolUsuario;
@@ -27,6 +35,8 @@ export default function CompletarPerfilMedicoPage() {
   const router = useRouter();
   const { loading, rol, session } = useRol();
   const [matricula, setMatricula] = useState("");
+  const [dni, setDni] = useState("");
+  const [jurisdiccion, setJurisdiccion] = useState("");
   const [especialidad, setEspecialidad] = useState("");
   const [telefono, setTelefono] = useState("");
   const [cargandoDatos, setCargandoDatos] = useState(true);
@@ -55,6 +65,8 @@ export default function CompletarPerfilMedicoPage() {
       .then((res) => {
         if (!activo) return;
         setMatricula(esMatriculaProvisoria(res.perfil.matricula) ? "" : (res.perfil.matricula ?? ""));
+        setDni(res.perfil.dni ?? "");
+        setJurisdiccion(res.perfil.jurisdiccion ?? "");
         setEspecialidad(res.perfil.especialidad ?? "");
         setTelefono(res.perfil.telefono_contacto ?? "");
       })
@@ -76,9 +88,14 @@ export default function CompletarPerfilMedicoPage() {
   async function guardar() {
     setError(null);
     const campos: string[] = [];
-    if (!esMatriculaValida(matricula)) campos.push("matrícula profesional");
+    if (!esDniEstrictoValido(dni)) campos.push("DNI (7 u 8 dígitos, sin puntos)");
+    const matriculaLimpia = matricula.trim();
+    if (!esMatriculaRealValida(matriculaLimpia) && !esMatriculaDePrueba(matriculaLimpia)) {
+      campos.push("matrícula profesional");
+    }
+    if (!esJurisdiccionSisaValida(jurisdiccion)) campos.push("jurisdicción oficial");
     if (especialidad.trim().length < 3) campos.push("especialidad");
-    if (telefono.replace(/\D/g, "").length < 8) campos.push("teléfono de contacto");
+    if (!esTelefonoValido(telefono)) campos.push("teléfono de contacto");
     if (campos.length > 0) {
       setError(`Completá en la solicitud: ${campos.join(", ")}.`);
       return;
@@ -90,7 +107,9 @@ export default function CompletarPerfilMedicoPage() {
     setSalvando(true);
     try {
       const cuerpo = JSON.stringify({
+        dni: dni.trim(),
         especialidad: especialidad.trim(),
+        jurisdiccion: jurisdiccion.trim(),
         matricula: matricula.trim(),
         telefono_contacto: telefono.trim(),
       });
@@ -105,7 +124,9 @@ export default function CompletarPerfilMedicoPage() {
           await apiFetch<VincularRespuesta>("/api/auth/vincular-rol", session, {
             body: JSON.stringify({
               datos: {
+                dni: dni.trim(),
                 especialidad: especialidad.trim(),
+                jurisdiccion: jurisdiccion.trim(),
                 matricula: matricula.trim(),
                 telefono_contacto: telefono.trim(),
               },
@@ -204,17 +225,51 @@ export default function CompletarPerfilMedicoPage() {
               <div className="space-y-4 mb-5">
                 <div>
                   <label className="text-sm font-medium text-gray-700 block mb-1">
-                    Matrícula profesional <span className="text-blue-600">*</span>
+                    DNI <span className="text-blue-600">*</span>
                   </label>
                   <input
                     className={inputClass}
                     disabled={salvando}
-                    onChange={(e) => setMatricula(e.target.value)}
-                    placeholder="MP 123456 / ME 789012"
+                    inputMode="numeric"
+                    maxLength={8}
+                    onChange={(e) => setDni(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                    placeholder="30123456 (7 u 8 dígitos, sin puntos)"
                     type="text"
-                    value={matricula}
+                    value={dni}
                   />
                 </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-sm font-medium text-gray-700 block mb-1">
+                      Matrícula profesional <span className="text-blue-600">*</span>
+                    </label>
+                    <input
+                      className={inputClass}
+                      disabled={salvando}
+                      onChange={(e) => setMatricula(e.target.value)}
+                      placeholder="MP 123456 / MN 789012"
+                      type="text"
+                      value={matricula}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium text-gray-700 block mb-1">
+                      Jurisdicción <span className="text-blue-600">*</span>
+                    </label>
+                    <select
+                      className={inputClass}
+                      disabled={salvando}
+                      onChange={(e) => setJurisdiccion(e.target.value)}
+                      value={jurisdiccion}
+                    >
+                      <option value="">Seleccionar</option>
+                      {JURISDICCIONES_SISA.map((j) => (
+                        <option key={j} value={j}>{j}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <p className="text-xs text-gray-400">Tu credencial se verifica contra el padrón SISA/REFEPS. Sin coincidencia, el alta se bloquea.</p>
                 <div>
                   <label className="text-sm font-medium text-gray-700 block mb-1">
                     Especialidad <span className="text-blue-600">*</span>

@@ -12,7 +12,12 @@ import { esDestinoInternoValido, esRutaMedica } from "@/lib/auth/ruteo";
 import { useSession } from "@/lib/auth/use-session";
 import {
   esCuitValido,
-  esMatriculaValida,
+  esDniEstrictoValido,
+  esJurisdiccionSisaValida,
+  esMatriculaDePrueba,
+  esMatriculaRealValida,
+  esTelefonoValido,
+  JURISDICCIONES_SISA,
   perfilMedicoCompleto,
   perfilPacienteCompleto,
 } from "@/lib/validation/profile";
@@ -73,11 +78,13 @@ function ElegirRolContenido() {
   const [rol, setRol] = useState<RolElegible>("paciente");
   const [alias, setAlias] = useState("");
   const [cuit, setCuit] = useState("");
+  const [dni, setDni] = useState("");
   const [documentacion, setDocumentacion] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [especialidad, setEspecialidad] = useState("");
   const [guardando, setGuardando] = useState(false);
   const [intento, setIntento] = useState(0);
+  const [jurisdiccion, setJurisdiccion] = useState("");
   const [matricula, setMatricula] = useState("");
   const [nombreCompleto, setNombreCompleto] = useState("");
   const [nombreInstitucion, setNombreInstitucion] = useState("");
@@ -180,7 +187,9 @@ function ElegirRolContenido() {
   function datosSegunRol(): Record<string, unknown> {
     if (rol === "medico") {
       return {
+        dni: dni.trim() || undefined,
         especialidad: especialidad.trim() || undefined,
+        jurisdiccion: jurisdiccion.trim() || undefined,
         matricula: matricula.trim() || undefined,
         telefono_contacto: telefono.trim() || undefined,
       };
@@ -194,20 +203,28 @@ function ElegirRolContenido() {
     }
     return {
       alias: alias.trim() || undefined,
+      dni: dni.trim() || undefined,
       nombre_completo: nombreCompleto.trim() || undefined,
     };
   }
 
   function validar(): string | null {
+    if (!esDniEstrictoValido(dni)) {
+      return "El DNI es obligatorio y debe tener exactamente 7 u 8 dígitos numéricos, sin puntos ni letras.";
+    }
     if (rol === "medico") {
-      if (!esMatriculaValida(matricula)) {
-        return "La matrícula profesional es obligatoria (mínimo 4 caracteres).";
+      const matriculaLimpia = matricula.trim();
+      if (!esMatriculaRealValida(matriculaLimpia) && !esMatriculaDePrueba(matriculaLimpia)) {
+        return "La matrícula profesional es obligatoria: 4 a 8 dígitos (con o sin prefijo MN/MP/ME).";
+      }
+      if (!esJurisdiccionSisaValida(jurisdiccion)) {
+        return "La jurisdicción es obligatoria: seleccioná la emisora oficial (Nacional o provincia).";
       }
       if (especialidad.trim().length < 3) {
         return "La especialidad es obligatoria (mínimo 3 caracteres).";
       }
-      if (telefono.replace(/\D/g, "").length < 8) {
-        return "El teléfono de contacto es obligatorio.";
+      if (!esTelefonoValido(telefono)) {
+        return "El teléfono de contacto es obligatorio (8 a 15 dígitos).";
       }
       return null;
     }
@@ -337,26 +354,43 @@ function ElegirRolContenido() {
 
       <div className="space-y-3 mb-4">
         {rol === "paciente" && (
-          <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-3">
             <div>
-              <label className="text-sm font-medium text-gray-700 block mb-1">Nombre</label>
+              <label className="text-sm font-medium text-gray-700 block mb-1">
+                DNI <span className="text-blue-600">*</span>
+              </label>
               <input
                 className={inputClass}
-                onChange={(e) => setNombreCompleto(e.target.value)}
-                placeholder="Nombre completo"
+                inputMode="numeric"
+                maxLength={8}
+                onChange={(e) => setDni(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                placeholder="Ej: 30123456 (7 u 8 dígitos, sin puntos)"
                 type="text"
-                value={nombreCompleto}
+                value={dni}
               />
+              <p className="text-xs text-gray-400 mt-1">Una sola cuenta por DNI. Si ya tenés cuenta, iniciá sesión.</p>
             </div>
-            <div>
-              <label className="text-sm font-medium text-gray-700 block mb-1">Alias</label>
-              <input
-                className={inputClass}
-                onChange={(e) => setAlias(e.target.value)}
-                placeholder="Ej: Carlos"
-                type="text"
-                value={alias}
-              />
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-sm font-medium text-gray-700 block mb-1">Nombre</label>
+                <input
+                  className={inputClass}
+                  onChange={(e) => setNombreCompleto(e.target.value)}
+                  placeholder="Nombre completo"
+                  type="text"
+                  value={nombreCompleto}
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium text-gray-700 block mb-1">Alias</label>
+                <input
+                  className={inputClass}
+                  onChange={(e) => setAlias(e.target.value)}
+                  placeholder="Ej: Carlos"
+                  type="text"
+                  value={alias}
+                />
+              </div>
             </div>
           </div>
         )}
@@ -365,16 +399,48 @@ function ElegirRolContenido() {
           <div className="space-y-3">
             <div>
               <label className="text-sm font-medium text-gray-700 block mb-1">
-                Matrícula profesional <span className="text-blue-600">*</span>
+                DNI <span className="text-blue-600">*</span>
               </label>
               <input
                 className={inputClass}
-                onChange={(e) => setMatricula(e.target.value)}
-                placeholder="MP 123456 / ME 789012"
+                inputMode="numeric"
+                maxLength={8}
+                onChange={(e) => setDni(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                placeholder="Ej: 30123456 (7 u 8 dígitos, sin puntos)"
                 type="text"
-                value={matricula}
+                value={dni}
               />
             </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-sm font-medium text-gray-700 block mb-1">
+                  Matrícula profesional <span className="text-blue-600">*</span>
+                </label>
+                <input
+                  className={inputClass}
+                  onChange={(e) => setMatricula(e.target.value)}
+                  placeholder="MP 123456 / MN 789012"
+                  type="text"
+                  value={matricula}
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium text-gray-700 block mb-1">
+                  Jurisdicción <span className="text-blue-600">*</span>
+                </label>
+                <select
+                  className={inputClass}
+                  onChange={(e) => setJurisdiccion(e.target.value)}
+                  value={jurisdiccion}
+                >
+                  <option value="">Seleccionar</option>
+                  {JURISDICCIONES_SISA.map((j) => (
+                    <option key={j} value={j}>{j}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <p className="text-xs text-gray-400">Tu credencial se verifica contra el padrón SISA/REFEPS. Sin coincidencia, el alta se bloquea.</p>
             <div>
               <label className="text-sm font-medium text-gray-700 block mb-1">
                 Especialidad <span className="text-blue-600">*</span>

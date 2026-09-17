@@ -1,3 +1,15 @@
+/**
+ * Cliente Supabase de navegador (singleton).
+ *
+ * Nota de seguridad / persistencia: `@supabase/ssr` gestiona la sesión vía
+ * cookies (sincronizadas con el middleware y los Server Components) e ignora
+ * la opción `auth.storage`, por lo que NO se le inyecta `sessionStorage` aquí:
+ * hacerlo no tendría efecto y rompería el SSR. La política "cerrar la
+ * pestaña/navegador destruye la sesión" se aplica en
+ * `@/lib/auth/persistencia-sesion` + `@/lib/auth/use-session`: cada pestaña
+ * nueva sin marcador destruye la sesión heredada con `signOut()`.
+ */
+
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createBrowserClient as createSsrBrowserClient } from "@supabase/ssr";

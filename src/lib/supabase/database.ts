@@ -29,6 +29,8 @@ export interface PerfilPacienteRow {
   id: string;
   usuario_id: string;
   alias: string;
+  dni: string | null;
+  telefono_contacto: string | null;
   nombre_completo: string | null;
   fecha_nacimiento: string | null;
   genero: string | null;
@@ -52,6 +54,8 @@ export interface PerfilPacienteRow {
 
 export interface PerfilPacienteInput {
   alias?: string;
+  dni?: string | null;
+  telefono_contacto?: string | null;
   nombre_completo?: string | null;
   fecha_nacimiento?: string | null;
   genero?: string | null;
@@ -90,12 +94,15 @@ export interface PacienteInstitucionRow {
 }
 
 export interface PerfilMedicoRow {
-  id: string;
-  usuario_id: string;
-  matricula: string;
+  dni?: string | null;
   especialidad: string | null;
+  estado_verificacion?: string | null;
+  id: string;
   institucion_id: string | null;
+  jurisdiccion?: string | null;
+  matricula: string;
   telefono_contacto: string | null;
+  usuario_id: string;
   creado_en: string;
 }
 

@@ -37,6 +37,10 @@ import { apiFetch } from "@/lib/api/client";
 import { useSession } from "@/lib/auth/use-session";
 import { cn } from "@/lib/utils";
 
+// Historia clínica de un paciente: render dinámico; el desmontaje purga los
+// datos para que atrás/cambio de médico no muestre la ficha anterior.
+export const dynamic = "force-dynamic";
+
 type Tab = "resumen" | "medicacion" | "estudios";
 
 interface PacienteClinico {
@@ -158,6 +162,10 @@ function PanelPacienteClinico({ session, slug }: PanelProps) {
 
     return () => {
       activo = false;
+      // Purga al desmontar/cambiar de paciente o sesión: evita que el bfcache
+      // o el botón atrás muestre la ficha clínica anterior.
+      setPaciente(null);
+      setEstudios([]);
     };
   }, [session, slug]);
 

@@ -34,7 +34,8 @@ export default function AccesoMedicoPage() {
 
   async function cerrarSesion() {
     await createBrowserClient().auth.signOut();
-    router.push("/");
+    router.replace("/");
+    router.refresh();
   }
 
   if (loading || esMedico) {

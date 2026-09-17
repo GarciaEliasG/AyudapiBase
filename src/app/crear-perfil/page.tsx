@@ -34,7 +34,7 @@ import { Toggle } from "@/components/shared/toggle";
 import { apiFetch, ApiError } from "@/lib/api/client";
 import { useSession } from "@/lib/auth/use-session";
 import { cn } from "@/lib/utils";
-import { esFechaValida, esGeneroValido, esGrupoSanguineoValido, normalizarFecha } from "@/lib/validation/profile";
+import { esDniEstrictoValido, esFechaValida, esGeneroValido, esGrupoSanguineoValido, normalizarFecha } from "@/lib/validation/profile";
 
 type Severidad = "Crítico" | "Moderado" | "Leve";
 
@@ -76,6 +76,7 @@ export default function CreateProfilePage() {
   const [step, setStep] = useState(1);
 
   const [alias, setAlias] = useState("");
+  const [dni, setDni] = useState("");
   const [birthDate, setBirthDate] = useState("");
   const [bloodGroup, setBloodGroup] = useState("");
   const [contactos, setContactos] = useState<Contact[]>([
@@ -120,6 +121,7 @@ export default function CreateProfilePage() {
         alias: string;
         altura_cm: number | null;
         contactos_emergencia: ContactoEmergencia[];
+        dni: string | null;
         fecha_nacimiento: string | null;
         genero: string | null;
         grupo_sanguineo: string | null;
@@ -144,6 +146,7 @@ export default function CreateProfilePage() {
         setError(null);
         const fechaNacimiento = normalizarFecha(perfil.fecha_nacimiento) ?? "";
         setAlias(perfil.alias.trim());
+        setDni((perfil.dni ?? "").trim());
         setFullName((perfil.nombre_completo ?? "").trim());
         setBirthDate(fechaNacimiento);
         setGender((perfil.genero ?? "").trim());
@@ -261,6 +264,7 @@ export default function CreateProfilePage() {
       alergias,
       alias: alias.trim(),
       altura_cm: height ? Number(height) : null,
+      dni: dni.trim(),
       contactos_emergencia: contactos
         .filter((c) => c.nombre.trim() && c.telefono.trim())
         .map<ContactoEmergencia>((c) => ({
@@ -313,6 +317,9 @@ export default function CreateProfilePage() {
     const faltantes: string[] = [];
     if (alias.trim().length < 2) {
       faltantes.push("alias");
+    }
+    if (!esDniEstrictoValido(dni)) {
+      faltantes.push("DNI (7 u 8 dígitos, sin puntos)");
     }
     if (!esFechaValida(birthDate)) {
       faltantes.push("fecha de nacimiento");
@@ -397,6 +404,11 @@ export default function CreateProfilePage() {
                   <span className="text-xs text-blue-600">Cifrado · solo médicos autorizados</span>
                 </div>
                 <input className={INPUT_CLASS} onChange={(e) => setFullName(e.target.value)} placeholder="Tu nombre legal completo" type="text" value={fullName} />
+              </div>
+              <div>
+                <label className="text-sm font-semibold text-gray-700 block mb-1">DNI <span className="text-blue-600">*</span></label>
+                <p className="text-xs text-gray-400 mb-1.5">7 u 8 dígitos, sin puntos ni letras. Una sola cuenta por DNI.</p>
+                <input className={INPUT_CLASS} inputMode="numeric" maxLength={8} onChange={(e) => setDni(e.target.value.replace(/\D/g, "").slice(0, 8))} placeholder="Ej: 30123456" type="text" value={dni} />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>

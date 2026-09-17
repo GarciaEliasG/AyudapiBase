@@ -1,6 +1,7 @@
 import type { PerfilMedicoRow } from "@/lib/supabase/database";
 
 import { parseJsonBody } from "@/lib/api/http";
+import { isDevBypassActiveFor, verificacionPara } from "@/lib/auth/dev-bypass";
 import {
   getBearerToken,
   getRolesForUser,
@@ -8,13 +9,32 @@ import {
   jsonError,
   jsonOk,
 } from "@/lib/auth/session";
+import { verificarProfesionalSisa } from "@/lib/auth/sisa";
+import {
+  guardarPerfilMedico,
+  mensajeConflictoMatricula,
+  verificarDniGlobal,
+  verificarUnicidadMedico,
+} from "@/lib/auth/verificacion-medico";
 import { createAdminServerClient } from "@/lib/supabase/server";
-import { esMatriculaValida } from "@/lib/validation/profile";
+import {
+  esMatriculaDePrueba,
+  normalizarDni,
+  normalizarJurisdiccionSisa,
+  normalizarMatricula,
+} from "@/lib/validation/profile";
+import {
+  detalle400DesdeZod,
+  medicoAltaSchema,
+  MENSAJE_SISA,
+} from "@/lib/validation/schemas";
 
 export const runtime = "nodejs";
 
 interface PerfilMedicoUpdate {
+  dni?: string;
   especialidad?: string;
+  jurisdiccion?: string;
   matricula?: string;
   telefono_contacto?: string;
 }
@@ -73,10 +93,15 @@ export async function GET(req: Request) {
 }
 
 /**
- * Completa los datos obligatorios del perfil médico (matrícula, especialidad y
- * teléfono de contacto). Patrón upsert robusto por `usuario_id` con
- * verificación previa de unicidad de matrícula: una matrícula ya registrada en
- * otra cuenta responde 409 en lugar de romper con `duplicate key ...`.
+ * Completa los datos obligatorios del perfil médico (DNI + jurisdicción
+ * oficial + matrícula + especialidad + teléfono, todos obligatorios según
+ * SISA/REFEPS). Patrón upsert robusto por `usuario_id` con verificación
+ * previa de unicidad de matrícula (+jurisdicción compuesta) y DNI global
+ * (una cuenta por DNI): un valor ya registrado en otra cuenta responde 409.
+ * Sin bypass, la credencial se contrasta contra el padrón SISA y el
+ * desajuste bloquea con 403 ("Médico no registrado…"). En modo bypass de
+ * desarrollo (email en `DEV_ADMIN_EMAILS`) se aceptan matrículas `TEST-...`
+ * y se autoasigna `estado_verificacion = "verificado"`.
  */
 export async function PUT(req: Request) {
   const auth = await autenticarMedico(req);
@@ -90,54 +115,93 @@ export async function PUT(req: Request) {
     return parsed.response;
   }
 
-  const matricula =
-    typeof parsed.data.matricula === "string" ? parsed.data.matricula.trim().toUpperCase() : "";
-  const especialidad =
-    typeof parsed.data.especialidad === "string"
-      ? parsed.data.especialidad.trim()
-      : "";
-  const telefono =
-    typeof parsed.data.telefono_contacto === "string"
-      ? parsed.data.telefono_contacto.trim()
-      : "";
+  const bypass = isDevBypassActiveFor(usuario.email);
+  const crudo: Record<string, unknown> = { ...(parsed.data as Record<string, unknown>) };
 
-  if (!esMatriculaValida(matricula)) {
+  // Modo bypass: completar faltantes con valores de prueba para avanzar sin trabas.
+  if (bypass) {
+    if (normalizarMatricula(crudo.matricula).length === 0) {
+      const base = usuario.id.replace(/-/g, "").slice(0, 8).toUpperCase() || "GENERAL";
+      crudo.matricula = `TEST-${base}`;
+    }
+    if (typeof crudo.especialidad !== "string" || crudo.especialidad.trim().length < 3) {
+      crudo.especialidad = "Medicina General";
+    }
+    const telCrudo = typeof crudo.telefono_contacto === "string" ? crudo.telefono_contacto : "";
+    if (telCrudo.replace(/\D/g, "").length < 8) {
+      crudo.telefono_contacto = "+54 11 0000-0000";
+    }
+    if (typeof crudo.jurisdiccion !== "string" || crudo.jurisdiccion.trim().length === 0) {
+      crudo.jurisdiccion = "NACIONAL";
+    }
+  }
+
+  const esPrueba = esMatriculaDePrueba(normalizarMatricula(crudo.matricula));
+  if (esPrueba && !bypass) {
     return jsonError(
-      "La matrícula profesional es obligatoria (mínimo 4 caracteres).",
-      400,
+      "Las matrículas de prueba (TEST-...) solo están habilitadas para cuentas de desarrollo autorizadas.",
+      403,
     );
   }
-  if (especialidad.length < 3) {
-    return jsonError("La especialidad es obligatoria (mínimo 3 caracteres).", 400);
+
+  // Validación estricta Zod: DNI + jurisdicción + matrícula + especialidad +
+  // teléfono obligatorios; el 400 detalla exactamente el campo en falta.
+  const validacion = medicoAltaSchema.safeParse({
+    dni: crudo.dni,
+    especialidad: crudo.especialidad,
+    jurisdiccion: crudo.jurisdiccion,
+    matricula: crudo.matricula,
+    telefono_contacto: crudo.telefono_contacto,
+  });
+  if (!validacion.success) {
+    const { detalles, mensaje } = detalle400DesdeZod(validacion.error);
+    return jsonError(mensaje, 400, detalles);
   }
-  if (telefono.replace(/\D/g, "").length < 8) {
-    return jsonError("El teléfono de contacto es obligatorio.", 400);
-  }
+  const matricula = normalizarMatricula(validacion.data.matricula);
+  const especialidad = validacion.data.especialidad.trim();
+  const telefono = validacion.data.telefono_contacto.trim();
+  const jurisdiccion = normalizarJurisdiccionSisa(validacion.data.jurisdiccion);
+  const dni = normalizarDni(validacion.data.dni);
 
   const admin = createAdminServerClient();
 
-  // La matrícula identifica al profesional: no puede pertenecer a otra cuenta.
-  const { data: ocupada, error: ocupadaError } = await admin
-    .from("perfiles_medico")
-    .select("usuario_id")
-    .eq("matricula", matricula)
-    .neq("usuario_id", usuario.id)
-    .maybeSingle();
-  if (ocupadaError) {
-    return jsonError(ocupadaError.message, 500, ocupadaError.code);
+  // Unicidad (matrícula + DNI global) + padrón SISA + fila propia: todo en paralelo.
+  const [unicidad, dniGlobal, sisaRes, filaRes] = await Promise.all([
+    verificarUnicidadMedico(admin, {
+      dni,
+      jurisdiccion,
+      matricula,
+      usuarioId: usuario.id,
+    }),
+    dni
+      ? verificarDniGlobal(admin, { dni, usuarioId: usuario.id })
+      : Promise.resolve<{ conflicto: string | null; error?: { code?: string; message: string } }>({ conflicto: null }),
+    bypass
+      ? Promise.resolve({ ok: true as const })
+      : verificarProfesionalSisa(admin, { dni, jurisdiccion, matricula }),
+    admin
+      .from("perfiles_medico")
+      .select("id")
+      .eq("usuario_id", usuario.id)
+      .maybeSingle(),
+  ]);
+  if (unicidad.error) {
+    return jsonError(unicidad.error.message ?? "No se pudo verificar la matrícula. Reintentá.", 500, unicidad.error.code);
   }
-  if (ocupada) {
-    return jsonError(
-      "Esa matrícula ya está registrada en otra cuenta. Verificá el número ingresado.",
-      409,
-    );
+  if (unicidad.conflicto) {
+    return jsonError(unicidad.conflicto, 409);
+  }
+  if (dniGlobal.error) {
+    return jsonError("No se pudo verificar el DNI. Reintentá.", 500, dniGlobal.error.code);
+  }
+  if (dniGlobal.conflicto) {
+    return jsonError(dniGlobal.conflicto, 409);
+  }
+  if (!sisaRes.ok) {
+    return jsonError(sisaRes.mensaje || MENSAJE_SISA, 403);
   }
 
-  const { data: fila, error: filaError } = await admin
-    .from("perfiles_medico")
-    .select("id")
-    .eq("usuario_id", usuario.id)
-    .maybeSingle();
+  const { data: fila, error: filaError } = filaRes;
   if (filaError) {
     return jsonError(filaError.message, 500, filaError.code);
   }
@@ -145,24 +209,29 @@ export async function PUT(req: Request) {
     return jsonError("Perfil de médico no encontrado. Reintentá el alta.", 404);
   }
 
-  const { error } = await admin
-    .from("perfiles_medico")
-    .update({
-      especialidad,
-      matricula,
-      telefono_contacto: telefono,
-    })
-    .eq("id", fila.id);
+  const verificacion = verificacionPara(usuario.email);
+  const { error } = await guardarPerfilMedico(admin, usuario.id, {
+    dni,
+    especialidad,
+    estadoVerificacion: verificacion,
+    jurisdiccion,
+    matricula,
+    telefonoContacto: telefono,
+  }, true);
   if (error) {
     // Carrera de concurrencia contra la verificación previa: mismo 409 amigable.
     if (error.code === "23505") {
       return jsonError(
-        "Esa matrícula ya está registrada en otra cuenta. Verificá el número ingresado.",
+        mensajeConflictoMatricula(matricula, jurisdiccion),
         409,
       );
     }
     return jsonError(error.message, 500, error.code);
   }
 
-  return jsonOk({ message: "Perfil de médico actualizado correctamente." });
+  return jsonOk({
+    bypass,
+    message: "Perfil de médico actualizado correctamente.",
+    verificacion,
+  });
 }

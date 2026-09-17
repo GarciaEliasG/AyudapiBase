@@ -1,13 +1,20 @@
 "use client";
 
-import { AlertTriangle, Home, RefreshCw } from "lucide-react";
+import { AlertTriangle, Home, Loader2, RefreshCw, UserPlus } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 
 import type { RolUsuario } from "@/lib/supabase/database";
 
-import { limpiarModoGoogle, RUTA_DESTINO_KEY } from "@/lib/auth/destino";
+import { notificarActividadSesion } from "@/lib/auth/actividad";
+import {
+  guardarModoGoogle,
+  leerModoGoogle,
+  limpiarModoGoogle,
+  RUTA_DESTINO_KEY,
+  type ModoGoogle,
+} from "@/lib/auth/destino";
 import { esRutaMedica, rutaPorRol } from "@/lib/auth/ruteo";
 import { createBrowserClient } from "@/lib/supabase/browser";
 import {
@@ -38,6 +45,9 @@ interface EstadoRespuesta {
 }
 
 type Estado = "procesando" | "error";
+
+/** Motivo del error: genérico, o cuenta Google sin registro previo. */
+type TipoError = "generico" | "no-registrado";
 
 function rutearPorRol(
   router: ReturnType<typeof useRouter>,
@@ -74,7 +84,49 @@ function CallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [estado, setEstado] = useState<Estado>("procesando");
+  const [tipoError, setTipoError] = useState<TipoError>("generico");
   const [mensajeError, setMensajeError] = useState<string | null>(null);
+  const [creandoCuenta, setCreandoCuenta] = useState(false);
+  /**
+   * Modo del flujo OAuth capturado UNA sola vez al montar. El inicializador
+   * de estado se evalúa una única vez por instancia del componente, por lo
+   * que el valor sobrevive a re-ejecuciones del efecto (StrictMode en
+   * desarrollo) y a re-renders: aunque `limpiarModoGoogle()` borre la
+   * bandera persistida durante el procesamiento, este flujo conserva su
+   * copia y siempre decide con el modo real elegido por el usuario.
+   */
+  const [modo] = useState<ModoGoogle>(() => leerModoGoogle());
+
+  /**
+   * Reinicia el flujo OAuth en modo registro para una cuenta Google que no
+   * está registrada. Se usa en el estado "Gmail no encontrado".
+   */
+  async function iniciarRegistroConGoogle() {
+    setCreandoCuenta(true);
+    try {
+      guardarModoGoogle("registro");
+      const res = await fetch("/api/auth/google", {
+        body: JSON.stringify({}),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const payload = (await res.json().catch(() => null)) as {
+        error?: { message?: string };
+        url?: string;
+      } | null;
+      if (!res.ok || !payload?.url) {
+        throw new Error(
+          payload?.error?.message ?? "No pudimos iniciar el registro con Google.",
+        );
+      }
+      window.location.href = payload.url;
+    } catch (err) {
+      setMensajeError(
+        err instanceof Error ? err.message : "No pudimos iniciar el registro. Reintentá.",
+      );
+      setCreandoCuenta(false);
+    }
+  }
 
   useEffect(() => {
     let activo = true;
@@ -144,9 +196,16 @@ function CallbackContent() {
           Authorization: `Bearer ${accessToken}`,
         };
 
-        // 3. Reconocimiento del usuario en base de datos, SIN provisionar: si
-        //    la cuenta es nueva (sin roles) se deriva obligatoriamente al panel
-        //    de vinculación de rol. Se conserva RUTA_DESTINO_KEY para retomar.
+        // 3. Reconocimiento del usuario en base de datos, SIN provisionar.
+        //
+        // Bloqueo de auto-registro: si la cuenta es nueva (sin roles
+        // vinculados en `roles_usuario`) y el flujo era "login", la sesión de
+        // Google se cancela de inmediato y se informa "Gmail no encontrado"
+        // con acceso directo al registro. Solo el flujo "registro" deriva al
+        // panel de vinculación de rol. Se conserva RUTA_DESTINO_KEY para
+        // retomar. `modo` viene del estado (capturado al montar) para que
+        // re-ejecuciones del efecto no lo pierdan; aquí se limpia la bandera
+        // persistida para no dejar estado residual.
         limpiarModoGoogle();
         const est = await fetch("/api/auth/estado", { headers: autorizacion });
         const payloadEstado = (await est.json().catch(() => null)) as EstadoRespuesta | null;
@@ -155,6 +214,20 @@ function CallbackContent() {
         }
         if (!payloadEstado || payloadEstado.roles.length === 0) {
           if (!activo) return;
+          if (modo === "login") {
+            try {
+              await client.auth.signOut();
+            } catch {
+              // La sesión ya es inválida; igual se informa sin acceso.
+            }
+            if (!activo) return;
+            setTipoError("no-registrado");
+            setEstado("error");
+            setMensajeError(
+              "Gmail no encontrado: esta cuenta de Google no está registrada. Creá tu cuenta para continuar.",
+            );
+            return;
+          }
           router.replace("/auth/elegir-rol");
           return;
         }
@@ -175,6 +248,10 @@ function CallbackContent() {
           );
         }
         const rol = payloadConf?.rol ?? payloadEstado.rol;
+
+        // Aviso de actividad: inicio de sesión exitoso de una cuenta
+        // existente (best-effort, nunca bloquea la navegación).
+        void notificarActividadSesion(accessToken, "inicio_sesion");
 
         // 5. Lectura del perfil para decidir a dónde enviar al usuario.
         let perfil: PerfilRespuesta["perfil"] = null;
@@ -209,23 +286,37 @@ function CallbackContent() {
     return () => {
       activo = false;
     };
-  }, [router, searchParams]);
+  }, [modo, router, searchParams]);
 
   if (estado === "error") {
+    const noRegistrado = tipoError === "no-registrado";
     return (
       <div className="bg-white rounded-2xl shadow-sm p-8 max-w-sm mx-auto text-center">
         <div className="w-12 h-12 bg-amber-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
           <AlertTriangle className="text-amber-500" size={22} />
         </div>
-        <h1 className="text-lg font-bold text-gray-900 mb-2">No pudimos completar el acceso</h1>
+        <h1 className="text-lg font-bold text-gray-900 mb-2">
+          {noRegistrado ? "Gmail no encontrado" : "No pudimos completar el acceso"}
+        </h1>
         <p className="text-sm text-gray-500 mb-6">{mensajeError ?? "Error inesperado."}</p>
         <div className="flex flex-col gap-2">
-          <button
-            className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-lg transition-colors"
-            onClick={() => window.location.assign(window.location.href)}
-          >
-            <RefreshCw size={14} /> Reintentar
-          </button>
+          {noRegistrado ? (
+            <button
+              className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg transition-colors"
+              disabled={creandoCuenta}
+              onClick={() => void iniciarRegistroConGoogle()}
+            >
+              {creandoCuenta ? <Loader2 className="animate-spin" size={14} /> : <UserPlus size={14} />}
+              {creandoCuenta ? "Abriendo Google…" : "Crear cuenta con Google"}
+            </button>
+          ) : (
+            <button
+              className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-lg transition-colors"
+              onClick={() => window.location.assign(window.location.href)}
+            >
+              <RefreshCw size={14} /> Reintentar
+            </button>
+          )}
           <Link
             className="flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-700 font-semibold py-2.5 rounded-lg transition-colors"
             href="/"
