@@ -460,12 +460,9 @@ do $$ begin
   end if;
 end $$;
 
--- DNI único entre profesionales (solo cuando está informado).
 create unique index if not exists perfiles_medico_dni_key
   on public.perfiles_medico (dni) where dni is not null;
 
--- Compuesta matrícula+jurisdicción (la unicidad de `matricula` ya la cubre;
--- este índice acelera la verificación previa del 409 descriptivo).
 create unique index if not exists perfiles_medico_matricula_jurisdiccion_key
   on public.perfiles_medico (matricula, jurisdiccion);
 
@@ -474,7 +471,6 @@ create unique index if not exists perfiles_medico_matricula_jurisdiccion_key
 -- Idempotente: seguro re-ejecutar.
 -- =============================================================================
 
--- DNI del paciente (una sola cuenta por DNI en todo el sistema).
 alter table public.perfiles_paciente
   add column if not exists dni text,
   add column if not exists telefono_contacto text;
@@ -492,7 +488,6 @@ do $$ begin
   end if;
 end $$;
 
--- Formato estricto del DNI del profesional (7 u 8 dígitos, sin puntos/letras).
 do $$ begin
   if not exists (
     select 1 from pg_constraint where conname = 'perfiles_medico_dni_formato_check'
@@ -503,10 +498,6 @@ do $$ begin
   end if;
 end $$;
 
--- Padrón oficial de profesionales (SISA/REFEPS). Fuente de verdad para la
--- verificación formal del trío (DNI, matrícula, jurisdicción). Sembrar con
--- los colegios profesionales; en local/CI puede reemplazarse con la variable
--- `SISA_PADRON_JSON` (ver `src/lib/auth/sisa.ts`).
 create table if not exists public.padron_profesionales (
   id           uuid primary key default gen_random_uuid(),
   dni          text not null check (dni ~ '^\d{7,8}$'),
@@ -523,5 +514,213 @@ create table if not exists public.padron_profesionales (
 alter table public.padron_profesionales enable row level security;
 
 drop policy if exists "padron_sin_acceso_anon" on public.padron_profesionales;
--- Sin políticas de lectura para roles públicos: solo `service_role` (bypass
--- RLS) lo consulta desde las rutas de verificación. Bloqueo total por defecto.
+
+-- =============================================================================
+-- 14. Dashboard institucional (DEV3 · datos anonimizados)
+-- =============================================================================
+-- Funciones RPC que alimentan el panel de instituciones. Todas devuelven
+-- agregados por celda de grilla (zona) o por condición registrada: nunca
+-- coordenadas exactas ni PII de un paciente puntual.
+
+create or replace function public.punto_lng(p_geom geometry, p_lng double precision)
+returns double precision
+language sql
+immutable
+as $$
+  select coalesce(st_x(p_geom), p_lng)
+$$;
+
+create or replace function public.punto_lat(p_geom geometry, p_lat double precision)
+returns double precision
+language sql
+immutable
+as $$
+  select coalesce(st_y(p_geom), p_lat)
+$$;
+
+create or replace function public.zona_id(p_lng double precision, p_lat double precision)
+returns text
+language sql
+immutable
+as $$
+  select format('%s:%s',
+    floor((p_lng + 180.0) / 0.5)::int,
+    floor((p_lat + 90.0) / 0.5)::int)
+$$;
+
+create or replace function public.zona_centro_lng(p_lng double precision)
+returns double precision
+language sql
+immutable
+as $$
+  select -180.0 + ((floor((p_lng + 180.0) / 0.5)::int * 0.5) + 0.25)
+$$;
+
+create or replace function public.zona_centro_lat(p_lat double precision)
+returns double precision
+language sql
+immutable
+as $$
+  select -90.0 + ((floor((p_lat + 90.0) / 0.5)::int * 0.5) + 0.25)
+$$;
+
+create or replace function public.patologias_array(p_json jsonb)
+returns jsonb
+language sql
+immutable
+as $$
+  select case
+    when jsonb_typeof(p_json) = 'array' then coalesce(p_json, '[]'::jsonb)
+    else '[]'::jsonb
+  end
+$$;
+
+create or replace function public.dashboard_metricas(p_periodo text default '12m')
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_desde timestamptz;
+begin
+  v_desde := case
+    when p_periodo = '1m' then now() - interval '1 month'
+    when p_periodo = '6m' then now() - interval '6 months'
+    else now() - interval '12 months'
+  end;
+
+  return jsonb_build_object(
+    'periodo', p_periodo,
+    'desde', v_desde,
+    'resumen', jsonb_build_object(
+      'incidentes', (select count(*)::int from public.incidentes i where i.timestamp >= v_desde),
+      'resueltos',  (select count(*)::int from public.incidentes i where i.timestamp >= v_desde and i.estado = 'resuelto'),
+      'en_curso',   (select count(*)::int from public.incidentes i where i.timestamp >= v_desde and i.estado = 'en_curso'),
+      'escaneos',   (select count(*)::int from public.escaneos_qr e where e.creado_en >= v_desde),
+      'atenciones', (select count(*)::int from public.atenciones a where a.fecha_atencion >= v_desde),
+      'registros_medicos', (select count(*)::int from public.registros_medicos r where r.creado_en >= v_desde)
+    ),
+    'por_estado', coalesce((
+      select jsonb_agg(jsonb_build_object('estado', fe.estado, 'cantidad', fe.cantidad) order by fe.cantidad desc)
+      from (
+        select i.estado::text as estado, count(*)::int as cantidad
+        from public.incidentes i
+        where i.timestamp >= v_desde
+        group by i.estado
+      ) fe
+    ), '[]'::jsonb),
+    'por_zona', coalesce((
+      select jsonb_agg(zz.obj order by (zz.obj->>'incidentes')::int desc, (zz.obj->>'atenciones')::int desc)
+      from (
+        select jsonb_build_object(
+          'zona', z.zona,
+          'lat', z.lat,
+          'lng', z.lng,
+          'incidentes', (select count(*)::int
+            from public.incidentes i
+            where i.timestamp >= v_desde
+              and public.zona_id(public.punto_lng(i.ubicacion, i.lng), public.punto_lat(i.ubicacion, i.lat)) = z.zona),
+          'escaneos', (select count(*)::int
+            from public.escaneos_qr e
+            where e.creado_en >= v_desde
+              and public.zona_id(e.lng, e.lat) = z.zona),
+          'atenciones', (select count(*)::int
+            from public.atenciones a
+            join public.incidentes i on i.id = a.incidente_id
+            where a.fecha_atencion >= v_desde
+              and public.zona_id(public.punto_lng(i.ubicacion, i.lng), public.punto_lat(i.ubicacion, i.lat)) = z.zona)
+        ) as obj
+        from (
+          select u.zona as zona, u.lat as lat, u.lng as lng
+          from (
+            select public.zona_id(public.punto_lng(i.ubicacion, i.lng), public.punto_lat(i.ubicacion, i.lat)) as zona,
+                   public.zona_centro_lat(public.punto_lat(i.ubicacion, i.lat)) as lat,
+                   public.zona_centro_lng(public.punto_lng(i.ubicacion, i.lng)) as lng
+            from public.incidentes i
+            where i.timestamp >= v_desde
+              and (i.ubicacion is not null or (i.lat is not null and i.lng is not null))
+            union
+            select public.zona_id(e.lng, e.lat) as zona,
+                   public.zona_centro_lat(e.lat) as lat,
+                   public.zona_centro_lng(e.lng) as lng
+            from public.escaneos_qr e
+            where e.creado_en >= v_desde
+              and e.lat is not null and e.lng is not null
+          ) u
+        ) z
+      ) zz
+    ), '[]'::jsonb),
+    'por_patologia', coalesce((
+      select jsonb_agg(pp.obj order by (pp.obj->>'incidentes')::int desc, (pp.obj->>'atenciones')::int desc)
+      from (
+        select jsonb_build_object(
+          'patologia', pj.tipo,
+          'incidentes', (select count(distinct i.id)::int
+            from public.incidentes i
+            join public.perfiles_paciente per on per.id = i.paciente_id
+            cross join lateral jsonb_array_elements(public.patologias_array(per.patologias)) as ej
+            where i.timestamp >= v_desde and ej->>'tipo' = pj.tipo),
+          'atenciones', (select count(distinct a.id)::int
+            from public.atenciones a
+            join public.perfiles_paciente per on per.id = a.paciente_id
+            cross join lateral jsonb_array_elements(public.patologias_array(per.patologias)) as ej
+            where a.fecha_atencion >= v_desde and ej->>'tipo' = pj.tipo)
+        ) as obj
+        from (
+          select distinct ej2->>'tipo' as tipo
+          from public.perfiles_paciente per2
+          cross join lateral jsonb_array_elements(public.patologias_array(per2.patologias)) as ej2
+          where ej2->>'tipo' is not null
+        ) pj
+      ) pp
+    ), '[]'::jsonb)
+  );
+end;
+$$;
+
+grant execute on function public.dashboard_metricas(text) to service_role;
+
+create or replace function public.incidentes_heatmap(p_periodo text default '12m')
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_desde timestamptz;
+begin
+  v_desde := case
+    when p_periodo = '1m' then now() - interval '1 month'
+    when p_periodo = '6m' then now() - interval '6 months'
+    else now() - interval '12 months'
+  end;
+
+  return coalesce((
+    select jsonb_agg(c.obj order by (c.obj->>'cantidad')::int desc)
+    from (
+      select jsonb_build_object(
+        'zona', public.zona_id(public.punto_lng(i.ubicacion, i.lng), public.punto_lat(i.ubicacion, i.lat)),
+        'lat',  public.zona_centro_lat(public.punto_lat(i.ubicacion, i.lat)),
+        'lng',  public.zona_centro_lng(public.punto_lng(i.ubicacion, i.lng)),
+        'cantidad', count(*)::int
+      ) as obj
+      from public.incidentes i
+      where i.timestamp >= v_desde
+        and (i.ubicacion is not null or (i.lat is not null and i.lng is not null))
+      group by public.zona_id(public.punto_lng(i.ubicacion, i.lng), public.punto_lat(i.ubicacion, i.lat)),
+               public.zona_centro_lat(public.punto_lat(i.ubicacion, i.lat)),
+               public.zona_centro_lng(public.punto_lng(i.ubicacion, i.lng))
+    ) c
+  ), '[]'::jsonb);
+end;
+$$;
+
+grant execute on function public.incidentes_heatmap(text) to service_role;
+
+grant execute on function public.punto_lng(geometry, double precision) to service_role;
+grant execute on function public.punto_lat(geometry, double precision) to service_role;
+grant execute on function public.zona_id(double precision, double precision) to service_role;
+grant execute on function public.zona_centro_lng(double precision) to service_role;
+grant execute on function public.zona_centro_lat(double precision) to service_role;
+grant execute on function public.patologias_array(jsonb) to service_role;
