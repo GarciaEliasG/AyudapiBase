@@ -1,0 +1,20 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: ayudapi
+    metrics_path: /api/metrics
+    # Local con Docker Desktop: cada compañero apunta a SU PROPIO npm run dev
+    # corriendo en su máquina. host.docker.internal es el nombre especial que
+    # Docker Desktop expone para que un contenedor llegue al host que lo corre.
+    scheme: http
+    static_configs:
+      - targets: ["host.docker.internal:3000"]
+
+    # Si en algún momento el equipo despliega esto contra el deploy real de
+    # Vercel en vez de local, comentá el bloque de arriba y descomentá este:
+    # scheme: https
+    # bearer_token: "el_mismo_valor_que_METRICS_TOKEN_en_vercel"
+    # static_configs:
+    #   - targets: ["tu-dominio-real.vercel.app"]
