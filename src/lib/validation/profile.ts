@@ -86,7 +86,55 @@ export function esGeneroValido(genero: unknown): boolean {
 
 export function esCuitValido(cuit: string): boolean {
   const digitos = cuit.replace(/\D/g, "");
-  return digitos.length === 11;
+  if (digitos.length !== 11) {
+    return false;
+  }
+  // Dígito verificador AFIP: coeficientes 5 4 3 2 7 6 5 4 3 2 sobre los
+  // primeros 10 dígitos. Se acepta el formato legacy (11 dígitos sin
+  // checksum válido) solo si el prefijo es de persona física/jurídica
+  // conocido, para no romper altas históricas; el esquema Zod estricto
+  // (`cuitSchema`) sí exige checksum.
+  const nums = digitos.split("").map(Number);
+  const coef = [5, 4, 3, 2, 7, 6, 5, 4, 3, 2];
+  // eslint-disable-next-line security/detect-object-injection -- índices acotados 0-9 sobre arrays locales, no input de usuario.
+  const suma = coef.reduce((acc, c, i) => acc + c * (nums[i] ?? 0), 0);
+  const resto = suma % 11;
+  const esperado = resto === 0 ? 0 : resto === 1 ? 9 : 11 - resto;
+  if (nums[10] === esperado) {
+    return true;
+  }
+  const prefijo = digitos.slice(0, 2);
+  return ["20", "23", "24", "27", "30", "33", "34"].includes(prefijo);
+}
+
+/** Normaliza CUIT a 11 dígitos (sin guiones/espacios) o `null`. */
+export function normalizarCuit(cuit: unknown): string | null {
+  if (typeof cuit !== "string" && typeof cuit !== "number") {
+    return null;
+  }
+  const digitos = String(cuit).replace(/\D/g, "");
+  return digitos.length === 11 ? digitos : null;
+}
+
+/** `true` solo si el CUIT tiene 11 dígitos Y dígito verificador AFIP válido. */
+export function esCuitEstrictoValido(cuit: unknown): boolean {
+  if (typeof cuit !== "string" && typeof cuit !== "number") {
+    return false;
+  }
+  const digitos = String(cuit).replace(/\D/g, "");
+  if (digitos.length !== 11) {
+    return false;
+  }
+  const nums = digitos.split("").map(Number);
+  if (nums.some((n) => Number.isNaN(n))) {
+    return false;
+  }
+  const coef = [5, 4, 3, 2, 7, 6, 5, 4, 3, 2];
+  // eslint-disable-next-line security/detect-object-injection -- índices acotados 0-9 sobre arrays locales, no input de usuario.
+  const suma = coef.reduce((acc, c, i) => acc + c * (nums[i] ?? 0), 0);
+  const resto = suma % 11;
+  const esperado = resto === 0 ? 0 : resto === 1 ? 9 : 11 - resto;
+  return nums[10] === esperado;
 }
 
 /**
@@ -386,4 +434,93 @@ export function perfilMedicoCompleto(perfil: {
     return false;
   }
   return telefono.replace(/\D/g, "").length >= 8;
+}
+
+/**
+ * `true` si el perfil opera bajo la excepción por invitación
+ * (`MEDICO_INVITE_CODE`): la columna `invite_modo` de `perfiles_medico` lo
+ * marca al persistir. Pre-migración (columna ausente) es `false` y rige el
+ * comportamiento clásico. Los perfiles provisorios legacy (sin marca)
+ * siguen exigiendo regularización.
+ */
+export function esMedicoInvitado(perfil: {
+  invite_modo?: unknown;
+} | null | undefined): boolean {
+  if (!perfil || typeof perfil !== "object") {
+    return false;
+  }
+  const modo = (perfil as { invite_modo?: unknown }).invite_modo;
+  return typeof modo === "string" && modo.trim().length > 0;
+}
+
+/**
+ * Gate operativo del panel clínico (etapa de desarrollo): el estado
+ * "pendiente" —incluida la matrícula provisoria `PENDIENTE-...` generada por
+ * código de invitación— posee exactamente los mismos permisos de acceso y
+ * operación (escanear QR, ver historial clínico, acceder a estudios) que un
+ * médico verificado por SISA, sin bloqueos ni excepciones restrictivas.
+ *
+ * Equivale a: perfil completo (SISA) O excepción por invitación O estado
+ * pendiente O matrícula provisoria. La regularización a matrícula definitiva
+ * se sugiere solo con un banner informativo no bloqueante en la UI.
+ */
+export function perfilMedicoOperativo(perfil: {
+  especialidad?: unknown;
+  estado_verificacion?: unknown;
+  invite_modo?: unknown;
+  matricula?: unknown;
+  telefono_contacto?: unknown;
+} | null | undefined): boolean {
+  if (!perfil) {
+    return false;
+  }
+  if (perfilMedicoCompleto(perfil) || esMedicoInvitado(perfil)) {
+    return true;
+  }
+  const estado =
+    typeof (perfil as { estado_verificacion?: unknown }).estado_verificacion ===
+    "string"
+      ? String(
+          (perfil as { estado_verificacion?: unknown }).estado_verificacion,
+        )
+          .trim()
+          .toLowerCase()
+      : "";
+  if (estado === "pendiente") {
+    return true;
+  }
+  if (esMatriculaProvisoria((perfil as { matricula?: unknown }).matricula)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * `true` si el médico opera con credencial pendiente de regularización
+ * (`estado_verificacion = "pendiente"` o matrícula provisoria). Solo para
+ * mostrar un banner informativo no bloqueante que sugiera actualizar a la
+ * matrícula definitiva; nunca debe usarse para bloquear el acceso.
+ */
+export function esMedicoPendienteInformativo(perfil: {
+  estado_verificacion?: unknown;
+  matricula?: unknown;
+} | null | undefined): boolean {
+  if (!perfil || typeof perfil !== "object") {
+    return false;
+  }
+  const estado =
+    typeof (perfil as { estado_verificacion?: unknown }).estado_verificacion ===
+    "string"
+      ? String(
+          (perfil as { estado_verificacion?: unknown }).estado_verificacion,
+        )
+          .trim()
+          .toLowerCase()
+      : "";
+  if (estado === "pendiente") {
+    return true;
+  }
+  return esMatriculaProvisoria(
+    (perfil as { matricula?: unknown }).matricula,
+  );
 }

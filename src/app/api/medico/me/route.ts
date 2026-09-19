@@ -1,7 +1,14 @@
 import type { PerfilMedicoRow } from "@/lib/supabase/database";
 
 import { parseJsonBody } from "@/lib/api/http";
+import { ipDeRequest, registrarActividadSesion } from "@/lib/auth/actividad-servidor";
 import { isDevBypassActiveFor, verificacionPara } from "@/lib/auth/dev-bypass";
+import {
+  CODIGO_MEDICO_INVALIDO,
+  invitacionMedicaHabilitada,
+  verificarCodigoInvitacionMedico,
+  type ModoInvitacion,
+} from "@/lib/auth/invitacion";
 import {
   getBearerToken,
   getRolesForUser,
@@ -19,12 +26,15 @@ import {
 import { createAdminServerClient } from "@/lib/supabase/server";
 import {
   esMatriculaDePrueba,
+  esMatriculaProvisoria,
+  matriculaProvisoriaPara,
   normalizarDni,
   normalizarJurisdiccionSisa,
   normalizarMatricula,
 } from "@/lib/validation/profile";
 import {
   detalle400DesdeZod,
+  medicoAltaInvitacionSchema,
   medicoAltaSchema,
   MENSAJE_SISA,
 } from "@/lib/validation/schemas";
@@ -32,6 +42,7 @@ import {
 export const runtime = "nodejs";
 
 interface PerfilMedicoUpdate {
+  codigo_invitacion?: string;
   dni?: string;
   especialidad?: string;
   jurisdiccion?: string;
@@ -102,6 +113,11 @@ export async function GET(req: Request) {
  * desajuste bloquea con 403 ("Médico no registrado…"). En modo bypass de
  * desarrollo (email en `DEV_ADMIN_EMAILS`) se aceptan matrículas `TEST-...`
  * y se autoasigna `estado_verificacion = "verificado"`.
+ * Vía de invitación (opcional, `MEDICO_INVITE_CODE` configurado): matrícula
+ * ausente o en trámite + código válido → se omite SISA, se persiste matrícula
+ * provisoria `PENDIENTE-...` con `estado_verificacion = "pendiente"` y se
+ * audita la excepción (`invite_modo`). Código inválido/ausente → 403
+ * fail-closed. Sin secreto rige la vía estricta (matrícula obligatoria, 400).
  */
 export async function PUT(req: Request) {
   const auth = await autenticarMedico(req);
@@ -144,39 +160,95 @@ export async function PUT(req: Request) {
     );
   }
 
-  // Validación estricta Zod: DNI + jurisdicción + matrícula + especialidad +
-  // teléfono obligatorios; el 400 detalla exactamente el campo en falta.
-  const validacion = medicoAltaSchema.safeParse({
-    dni: crudo.dni,
-    especialidad: crudo.especialidad,
-    jurisdiccion: crudo.jurisdiccion,
-    matricula: crudo.matricula,
-    telefono_contacto: crudo.telefono_contacto,
-  });
-  if (!validacion.success) {
-    const { detalles, mensaje } = detalle400DesdeZod(validacion.error);
-    return jsonError(mensaje, 400, detalles);
+  // Vía de invitación: matrícula ausente o en trámite + mecanismo habilitado
+  // (`MEDICO_INVITE_CODE`). El esquema condicional (`medicoAltaInvitacionSchema`)
+  // exige el resto con el mismo rigor (400 por campo) y el gate el código
+  // (403 fail-closed). Sin secreto configurado se cae a la validación
+  // estricta clásica (matrícula obligatoria, 400).
+  let inviteModo: ModoInvitacion | null = null;
+  let matricula: string;
+  let especialidad: string;
+  let telefono: string;
+  let jurisdiccion: string | null;
+  let dni: string | null;
+
+  const sinMatricula = esMatriculaProvisoria(normalizarMatricula(crudo.matricula));
+  if (!bypass && sinMatricula && invitacionMedicaHabilitada()) {
+    const matriculaCruda =
+      typeof crudo.matricula === "string" && crudo.matricula.trim().length > 0
+        && !esMatriculaProvisoria(normalizarMatricula(crudo.matricula))
+        ? crudo.matricula
+        : undefined;
+    const invitacion = medicoAltaInvitacionSchema.safeParse({
+      codigo_invitacion: crudo.codigo_invitacion,
+      dni: crudo.dni,
+      especialidad: crudo.especialidad,
+      jurisdiccion: crudo.jurisdiccion,
+      matricula: matriculaCruda,
+      telefono_contacto: crudo.telefono_contacto,
+    });
+    if (!invitacion.success) {
+      const { detalles, mensaje } = detalle400DesdeZod(invitacion.error);
+      return jsonError(mensaje, 400, detalles);
+    }
+    const gate = verificarCodigoInvitacionMedico(invitacion.data.codigo_invitacion);
+    if (!gate.ok) {
+      return jsonError(
+        gate.mensaje,
+        gate.status,
+        gate.code === CODIGO_MEDICO_INVALIDO
+          ? [{ campo: "codigo_invitacion", mensaje: gate.mensaje }]
+          : { code: gate.code },
+      );
+    }
+    dni = normalizarDni(invitacion.data.dni);
+    jurisdiccion = normalizarJurisdiccionSisa(invitacion.data.jurisdiccion);
+    // Provisoria única por usuario hasta regularizar la matrícula real. Sin
+    // matrícula real no hay unicidad de matrícula ni SISA que verificar.
+    matricula = matriculaProvisoriaPara(usuario.id);
+    telefono = invitacion.data.telefono_contacto.trim();
+    especialidad = invitacion.data.especialidad.trim();
+    inviteModo = gate.modo;
+  } else {
+    // Validación estricta Zod: DNI + jurisdicción + matrícula + especialidad +
+    // teléfono obligatorios; el 400 detalla exactamente el campo en falta.
+    const validacion = medicoAltaSchema.safeParse({
+      dni: crudo.dni,
+      especialidad: crudo.especialidad,
+      jurisdiccion: crudo.jurisdiccion,
+      matricula: crudo.matricula,
+      telefono_contacto: crudo.telefono_contacto,
+    });
+    if (!validacion.success) {
+      const { detalles, mensaje } = detalle400DesdeZod(validacion.error);
+      return jsonError(mensaje, 400, detalles);
+    }
+    matricula = normalizarMatricula(validacion.data.matricula);
+    especialidad = validacion.data.especialidad.trim();
+    telefono = validacion.data.telefono_contacto.trim();
+    jurisdiccion = normalizarJurisdiccionSisa(validacion.data.jurisdiccion);
+    dni = normalizarDni(validacion.data.dni);
   }
-  const matricula = normalizarMatricula(validacion.data.matricula);
-  const especialidad = validacion.data.especialidad.trim();
-  const telefono = validacion.data.telefono_contacto.trim();
-  const jurisdiccion = normalizarJurisdiccionSisa(validacion.data.jurisdiccion);
-  const dni = normalizarDni(validacion.data.dni);
 
   const admin = createAdminServerClient();
 
   // Unicidad (matrícula + DNI global) + padrón SISA + fila propia: todo en paralelo.
+  // Vía de invitación: la provisoria es única por construcción y el padrón
+  // SISA se omite (sin matrícula no hay qué contrastar); el DNI global sí se
+  // exige siempre (409).
   const [unicidad, dniGlobal, sisaRes, filaRes] = await Promise.all([
-    verificarUnicidadMedico(admin, {
-      dni,
-      jurisdiccion,
-      matricula,
-      usuarioId: usuario.id,
-    }),
+    inviteModo
+      ? Promise.resolve<{ conflicto: string | null; error?: { code?: string; message: string } }>({ conflicto: null })
+      : verificarUnicidadMedico(admin, {
+          dni,
+          jurisdiccion,
+          matricula,
+          usuarioId: usuario.id,
+        }),
     dni
       ? verificarDniGlobal(admin, { dni, usuarioId: usuario.id })
       : Promise.resolve<{ conflicto: string | null; error?: { code?: string; message: string } }>({ conflicto: null }),
-    bypass
+    bypass || inviteModo
       ? Promise.resolve({ ok: true as const })
       : verificarProfesionalSisa(admin, { dni, jurisdiccion, matricula }),
     admin
@@ -214,6 +286,9 @@ export async function PUT(req: Request) {
     dni,
     especialidad,
     estadoVerificacion: verificacion,
+    // Vía de invitación: marca la excepción; vía estricta con matrícula
+    // real: la limpia (regularización, opera ya sin excepción).
+    inviteModo: inviteModo ?? null,
     jurisdiccion,
     matricula,
     telefonoContacto: telefono,
@@ -229,9 +304,24 @@ export async function PUT(req: Request) {
     return jsonError(error.message, 500, error.code);
   }
 
+  // La vía de invitación queda registrada como excepción en la auditoría
+  // (best-effort, no bloquea la respuesta).
+  if (inviteModo) {
+    await registrarActividadSesion(admin, {
+      accion: "registro",
+      detalles: { canal: "medico-me", invite_modo: inviteModo, rol: "medico" },
+      direccionIp: ipDeRequest(req),
+      email: usuario.email,
+      usuarioId: usuario.id,
+    });
+  }
+
   return jsonOk({
     bypass,
-    message: "Perfil de médico actualizado correctamente.",
+    ...(inviteModo ? { invitacion: true as const } : {}),
+    message: inviteModo
+      ? "Perfil guardado como pendiente de verificación de matrícula."
+      : "Perfil de médico actualizado correctamente.",
     verificacion,
   });
 }

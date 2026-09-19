@@ -5,7 +5,6 @@ import type { Session } from "@supabase/supabase-js";
 import {
   AlertTriangle,
   ArrowRight,
-  Camera,
   Check,
   ChevronLeft,
   Clock,
@@ -26,14 +25,13 @@ import { useEffect, useState } from "react";
 import type { PerfilMedicoRow } from "@/lib/supabase/database";
 
 import { LoginModal } from "@/components/auth/login-modal";
-import {
-  CameraScanner,
-  type ScannerErrorInfo,
-} from "@/components/medico/camera-scanner";
 import { apiFetch } from "@/lib/api/client";
 import { useSession } from "@/lib/auth/use-session";
 import { createBrowserClient } from "@/lib/supabase/browser";
-import { perfilMedicoCompleto } from "@/lib/validation/profile";
+import {
+  esMedicoPendienteInformativo,
+  perfilMedicoOperativo,
+} from "@/lib/validation/profile";
 
 // Panel con datos de pacientes: render dinámico por solicitud.
 // Junto con `cache: no-store` evita historiales precargados entre médicos.
@@ -62,8 +60,6 @@ interface PerfilMedicoResponse {
   email: string | null;
   perfil: PerfilMedicoRow;
 }
-
-const CAMARA_ID = "camara-escaner-medico";
 
 function extraerSlugCodigo(texto: string): string {
   const ultimoSegmento = texto.trim().split("/").pop() ?? "";
@@ -119,7 +115,7 @@ function EscaneoFila({
         )}
         {disponible ? (
           <span className="flex items-center gap-1 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-bold px-2 py-0.5 rounded-full whitespace-nowrap">
-            <Check size={9} /> QR activo
+            <Check size={9} /> Código activo
           </span>
         ) : (
           <span className="flex items-center gap-1 bg-gray-100 text-gray-400 text-xs font-semibold px-2 py-0.5 rounded-full whitespace-nowrap">
@@ -153,13 +149,11 @@ export default function MedicoEscanearPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resultado, setResultado] = useState<VerificarQrResponse | null>(null);
-  const [scanning, setScanning] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
 
   const [escaneos, setEscaneos] = useState<EscaneoReciente[]>([]);
   const [cargandoEscaneos, setCargandoEscaneos] = useState(true);
   const [errorEscaneos, setErrorEscaneos] = useState<string | null>(null);
-  const [errorCamara, setErrorCamara] = useState<ScannerErrorInfo | null>(null);
 
   useEffect(() => {
     if (!session) {
@@ -176,9 +170,9 @@ export default function MedicoEscanearPage() {
       .then((res) => {
         if (active) {
           setMedico(res);
-          // Médico con perfil incompleto (registro por Google con matrícula
-          // provisoria "S/M" o datos faltantes): se completa antes de operar.
-          if (!perfilMedicoCompleto(res.perfil)) {
+          // Gate operativo (etapa de desarrollo): "pendiente" opera igual
+          // que "verificado". Solo los perfiles sin datos mínimos van al alta.
+          if (!perfilMedicoOperativo(res.perfil)) {
             router.replace("/medico/completar-perfil");
           }
         }
@@ -222,10 +216,10 @@ export default function MedicoEscanearPage() {
     };
   }, [session]);
 
-  async function verificar(valorRaw?: string) {
-    const codigo = extraerSlugCodigo(valorRaw ?? slug);
+  async function verificar() {
+    const codigo = extraerSlugCodigo(slug);
     if (!codigo) {
-      setError("Ingresá el código QR del paciente.");
+      setError("Ingresá el código del paciente.");
       return;
     }
     setBusy(true);
@@ -245,17 +239,11 @@ export default function MedicoEscanearPage() {
       }
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "No se pudo verificar el código QR.",
+        err instanceof Error ? err.message : "No se pudo verificar el código.",
       );
     } finally {
       setBusy(false);
     }
-  }
-
-  function manejarDeteccion(texto: string) {
-    setScanning(false);
-    setErrorCamara(null);
-    void verificar(texto);
   }
 
   async function cerrarSesion() {
@@ -344,6 +332,20 @@ export default function MedicoEscanearPage() {
       </header>
 
       <div className="max-w-3xl mx-auto px-4 py-6">
+        {medico && esMedicoPendienteInformativo(medico.perfil) && (
+          <div className="bg-blue-50 border border-blue-200 rounded-2xl px-4 py-3 mb-6 flex items-start gap-2">
+            <Shield className="text-blue-600 flex-shrink-0 mt-0.5" size={14} />
+            <p className="text-xs text-blue-800 leading-relaxed">
+              <strong>Matrícula en trámite:</strong> estás operando con acceso
+              completo. Cuando te otorguen tu matrícula profesional definitiva,
+              actualizala desde{" "}
+              <Link className="font-bold underline" href="/medico/completar-perfil">
+                completar perfil
+              </Link>
+              .
+            </p>
+          </div>
+        )}
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 mb-6 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-11 h-11 bg-blue-50 rounded-full flex items-center justify-center flex-shrink-0">
@@ -372,80 +374,34 @@ export default function MedicoEscanearPage() {
         <section className="rounded-2xl text-white p-5 mb-6" style={{ background: "#2563EB" }}>
           <div className="text-center mb-4">
             <div className="w-16 h-16 bg-white/15 rounded-2xl flex items-center justify-center mx-auto mb-4">
-              <Camera className="text-white" size={28} />
+              <Search className="text-white" size={28} />
             </div>
-            <h1 className="text-2xl font-extrabold mb-1">Escanear código QR</h1>
+            <h1 className="text-2xl font-extrabold mb-1">Buscar paciente por código</h1>
             <p className="text-blue-200 text-sm max-w-md mx-auto">
-              Escaneá el QR del paciente con la cámara o ingresá su slug para
-              acceder de inmediato a su historial clínico.
+              Ingresá el código (slug) del paciente para acceder de inmediato
+              a su historial clínico.
             </p>
           </div>
 
           <div className="max-w-lg mx-auto">
-            {!scanning && (
-              <button
-                className="w-full flex items-center justify-center gap-2 bg-white text-blue-700 font-bold py-3 rounded-xl transition-colors text-sm mb-3"
-                onClick={() => {
-                  setScanning(true);
-                  setError(null);
-                  setErrorCamara(null);
-                }}
-              >
-                <Camera size={16} /> Escanear con cámara
-              </button>
-            )}
-
-            {scanning && (
-              <div className="mb-3">
-                <CameraScanner
-                  containerId={CAMARA_ID}
-                  onDetected={manejarDeteccion}
-                  onError={setErrorCamara}
-                />
-                {(errorCamara?.categoria === "permisos" ||
-                  errorCamara?.categoria === "inseguro" ||
-                  errorCamara?.categoria === "bloqueada" ||
-                  errorCamara?.categoria === "sin-camara") && (
-                  <div className="mt-3 bg-amber-400/15 border border-amber-400/40 rounded-xl px-4 py-3 text-left">
-                    <p className="text-amber-300 text-xs font-bold mb-1 flex items-center gap-1.5">
-                      <AlertTriangle size={12} /> La cámara puede estar bloqueada
-                    </p>
-                    <p className="text-blue-100 text-xs leading-relaxed">
-                      {errorCamara.hint} El slug del QR (código impreso) funciona
-                      siempre: copialo abajo o pedile que te lo dicten.
-                    </p>
-                  </div>
-                )}
-                <button
-                  className="w-full flex items-center justify-center gap-2 bg-white/15 border border-white/30 hover:bg-white/25 text-white font-semibold py-2.5 rounded-xl transition-colors text-sm mt-3"
-                  onClick={() => setScanning(false)}
-                >
-                  <X size={14} /> Detener cámara
-                </button>
-              </div>
-            )}
-
-            <div className="flex items-center gap-2">
-              <span className="text-blue-200 text-xs font-semibold uppercase tracking-wider flex-shrink-0">
-                o slug
-              </span>
-              <div className="h-px bg-white/20 flex-1" />
-            </div>
-
-            <div className="flex gap-2 mt-3">
+            <label className="text-blue-200 text-xs font-semibold uppercase tracking-wider" htmlFor="codigo-paciente">
+              Código del paciente
+            </label>
+            <div className="flex flex-col sm:flex-row gap-2 mt-2">
               <input
-                className="flex-1 border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/10 text-white placeholder:text-blue-200 focus:outline-none focus:ring-2 focus:ring-white/60 font-mono"
+                className="flex-1 min-w-0 border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/10 text-white placeholder:text-blue-200 focus:outline-none focus:ring-2 focus:ring-white/60 font-mono"
+                id="codigo-paciente"
                 onChange={(e) => {
                   setSlug(e.target.value);
                   setError(null);
                 }}
                 onKeyDown={(e) => e.key === "Enter" && verificar()}
-                placeholder="Slug del QR · Ej: abc123xyz"
+                placeholder="Ej: abc123xyz"
                 type="text"
                 value={slug}
               />
               <button
-                className="flex items-center gap-2 bg-white text-blue-700 font-bold px-5 py-3 rounded-xl transition-colors text-sm disabled:opacity-60"
+                className="flex items-center justify-center gap-2 bg-white text-blue-700 font-bold px-5 py-3 rounded-xl transition-colors text-sm disabled:opacity-60 w-full sm:w-auto flex-shrink-0"
                 disabled={busy}
                 onClick={() => verificar()}
               >
@@ -454,7 +410,7 @@ export default function MedicoEscanearPage() {
                 ) : (
                   <Search size={15} />
                 )}
-                Verificar
+                Buscar
               </button>
             </div>
           </div>
@@ -472,7 +428,7 @@ export default function MedicoEscanearPage() {
                 <div className="bg-emerald-500 px-5 py-3 flex items-center gap-2">
                   <Check className="text-white" size={14} />
                   <span className="text-sm font-bold text-white">
-                    Código QR verificado
+                    Código verificado
                   </span>
                 </div>
                 <div className="p-5">
@@ -524,9 +480,9 @@ export default function MedicoEscanearPage() {
               <History className="text-emerald-600" size={16} />
             </div>
             <div>
-              <h2 className="font-bold text-gray-900">Historial de Escaneos Recientes</h2>
+              <h2 className="font-bold text-gray-900">Historial de Búsquedas Recientes</h2>
               <p className="text-xs text-gray-500">
-                Últimos QR verificados con tu cuenta
+                Últimos códigos verificados con tu cuenta
               </p>
             </div>
           </div>
@@ -549,10 +505,10 @@ export default function MedicoEscanearPage() {
               <div className="bg-gray-50 border border-dashed border-gray-200 rounded-xl px-4 py-6 text-center">
                 <History className="text-gray-400 mx-auto mb-2" size={20} />
                 <p className="text-sm text-gray-500 font-medium">
-                  Todavía no escaneaste ningún QR.
+                  Todavía no buscaste ningún código.
                 </p>
                 <p className="text-xs text-gray-400">
-                  Verificá un código para que quede registrado acá.
+                  Buscá un código para que quede registrado acá.
                 </p>
               </div>
             )}
@@ -561,7 +517,7 @@ export default function MedicoEscanearPage() {
               <div className="space-y-2">
                 <p className="text-xs text-gray-500 font-semibold">
                   {escaneos.length.toString()} registro
-                  {escaneos.length === 1 ? "" : "s"} · Solo pacientes con QR
+                  {escaneos.length === 1 ? "" : "s"} · Solo pacientes con código
                   activo y acceso médico habilitado se pueden reabrir
                 </p>
                 {escaneos.map((e) => (
@@ -586,7 +542,7 @@ export default function MedicoEscanearPage() {
                 Acceso auditado y registrado
               </p>
               <p className="text-xs text-amber-700/80 leading-relaxed">
-                Cada consulta y escaneo queda registrado con tu matrícula, fecha
+                Cada consulta y búsqueda queda registrada con tu matrícula, fecha
                 y hora. El acceso a datos sensibles está sujeto al consentimiento
                 del paciente y al marco legal vigente. Ley 25.326.
               </p>

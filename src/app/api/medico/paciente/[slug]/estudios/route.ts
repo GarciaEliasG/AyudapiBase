@@ -1,5 +1,6 @@
 import type { EstudioConAcceso } from "@/lib/supabase/database";
 
+import { inviteModoMedico } from "@/lib/auth/invitacion";
 import {
   getBearerToken,
   getRolesForUser,
@@ -37,6 +38,10 @@ export async function GET(
   }
 
   const admin = createAdminServerClient();
+
+  // Marca de excepción por invitación del operador (para etiquetar la
+  // auditoría). Independiente del QR: corre en paralelo con su lectura.
+  const inviteModoPromise = inviteModoMedico(admin, user.id);
 
   const { data: tokenRow, error: tokenError } = await admin
     .from("tokens_qr")
@@ -95,11 +100,18 @@ export async function GET(
     }),
   );
 
+  // Operación bajo excepción por invitación: queda diferenciada en la
+  // auditoría (Ley 25.326). Ausente en médicos con credencial completa.
+  const inviteModo = await inviteModoPromise;
   await admin.from("logs_auditoria").insert({
     accion: "acceso_estudios",
     paciente_id: perfil.id,
     usuario_id: user.id,
-    detalles: { slug, cantidad: estudios.length },
+    detalles: {
+      slug,
+      cantidad: estudios.length,
+      ...(inviteModo ? { invite_modo: inviteModo } : {}),
+    },
   });
 
   return jsonOk({ estudios });

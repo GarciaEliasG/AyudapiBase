@@ -99,6 +99,8 @@ export interface PerfilMedicoRow {
   estado_verificacion?: string | null;
   id: string;
   institucion_id: string | null;
+  /** Excepción por invitación (`'codigo'`): opera pendiente de regularización. */
+  invite_modo?: string | null;
   jurisdiccion?: string | null;
   matricula: string;
   telefono_contacto: string | null;

@@ -1,3 +1,4 @@
+import { inviteModoMedico } from "@/lib/auth/invitacion";
 import {
   getBearerToken,
   getRolesForUser,
@@ -42,6 +43,10 @@ export async function GET(req: Request) {
 
   const admin = createAdminServerClient();
 
+  // Marca de excepción por invitación del operador (para etiquetar la
+  // auditoría). Independiente del QR: corre en paralelo con su lectura.
+  const inviteModoPromise = inviteModoMedico(admin, user.id);
+
   const { data: tokenRow, error: tokenError } = await admin
     .from("tokens_qr")
     .select("id, paciente_id, activo")
@@ -80,11 +85,17 @@ export async function GET(req: Request) {
     );
   }
 
+  // Operación bajo excepción por invitación: queda diferenciada en la
+  // auditoría (Ley 25.326). Ausente en médicos con credencial completa.
+  const inviteModo = await inviteModoPromise;
   await admin.from("logs_auditoria").insert({
     accion: "verificar_qr",
     paciente_id: perfil.id,
     usuario_id: user.id,
-    detalles: { token_qr_id: tokenRow.id },
+    detalles: {
+      token_qr_id: tokenRow.id,
+      ...(inviteModo ? { invite_modo: inviteModo } : {}),
+    },
   });
 
   // Historial de escaneos del médico: queda registrado qué QR leyó y cuándo.

@@ -35,6 +35,7 @@ export default function CompletarPerfilMedicoPage() {
   const router = useRouter();
   const { loading, rol, session } = useRol();
   const [matricula, setMatricula] = useState("");
+  const [codigo, setCodigo] = useState("");
   const [dni, setDni] = useState("");
   const [jurisdiccion, setJurisdiccion] = useState("");
   const [especialidad, setEspecialidad] = useState("");
@@ -44,6 +45,7 @@ export default function CompletarPerfilMedicoPage() {
   const [salvando, setSalvando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [listo, setListo] = useState(false);
+  const [pendiente, setPendiente] = useState(false);
   const [intento, setIntento] = useState(0);
 
   useEffect(() => {
@@ -87,11 +89,19 @@ export default function CompletarPerfilMedicoPage() {
 
   async function guardar() {
     setError(null);
+    setPendiente(false);
     const campos: string[] = [];
     if (!esDniEstrictoValido(dni)) campos.push("DNI (7 u 8 dígitos, sin puntos)");
     const matriculaLimpia = matricula.trim();
-    if (!esMatriculaRealValida(matriculaLimpia) && !esMatriculaDePrueba(matriculaLimpia)) {
+    // Matrícula ausente o en trámite: se admite código de invitación médica
+    // (el backend lo exige vía `MEDICO_INVITE_CODE`, 403 fail-closed).
+    const sinMatricula =
+      matriculaLimpia.length === 0 || esMatriculaProvisoria(matriculaLimpia);
+    if (!sinMatricula && !esMatriculaRealValida(matriculaLimpia) && !esMatriculaDePrueba(matriculaLimpia)) {
       campos.push("matrícula profesional");
+    }
+    if (sinMatricula && codigo.trim().length === 0) {
+      campos.push("matrícula profesional o código de invitación de médico");
     }
     if (!esJurisdiccionSisaValida(jurisdiccion)) campos.push("jurisdicción oficial");
     if (especialidad.trim().length < 3) campos.push("especialidad");
@@ -104,36 +114,64 @@ export default function CompletarPerfilMedicoPage() {
       setError("No hay sesión activa. Volvé a ingresar.");
       return;
     }
+    const porInvitacion = sinMatricula;
     setSalvando(true);
     try {
-      const cuerpo = JSON.stringify({
+      const datos = {
+        codigo_invitacion: codigo.trim() || undefined,
         dni: dni.trim(),
         especialidad: especialidad.trim(),
         jurisdiccion: jurisdiccion.trim(),
-        matricula: matricula.trim(),
+        matricula: matricula.trim() || undefined,
         telefono_contacto: telefono.trim(),
-      });
+      };
+      const cuerpo = JSON.stringify(datos);
       try {
-        await apiFetch<{ message: string }>("/api/medico/me", session, {
-          body: cuerpo,
-          method: "PUT",
-        });
+        const res = await apiFetch<{ invitacion?: boolean; message: string }>(
+          "/api/medico/me",
+          session,
+          {
+            body: cuerpo,
+            method: "PUT",
+          },
+        );
+        // Guardado por invitación: el perfil queda pendiente de verificación
+        // de matrícula, pero en esta etapa opera con acceso completo (mismos
+        // permisos que verificado). Se continúa al destino o al escáner.
+        if (res.invitacion ?? porInvitacion) {
+          const destinoInvitacion = window.sessionStorage.getItem(RUTA_DESTINO_KEY);
+          if (destinoInvitacion?.startsWith("/") && !destinoInvitacion.startsWith("//")) {
+            window.sessionStorage.removeItem(RUTA_DESTINO_KEY);
+            router.replace(destinoInvitacion);
+            return;
+          }
+          setListo(true);
+          setPendiente(true);
+          setSalvando(false);
+          router.replace("/medico/escanear");
+          return;
+        }
       } catch (err) {
-        // Sin fila previa: se crea mediante la vinculación del rol médico.
+        // Sin fila previa: se crea mediante la vinculación del rol médico
+        // (ya admite la vía de invitación con el mismo código).
         if (err instanceof ApiError && err.status === 404) {
           await apiFetch<VincularRespuesta>("/api/auth/vincular-rol", session, {
-            body: JSON.stringify({
-              datos: {
-                dni: dni.trim(),
-                especialidad: especialidad.trim(),
-                jurisdiccion: jurisdiccion.trim(),
-                matricula: matricula.trim(),
-                telefono_contacto: telefono.trim(),
-              },
-              rol: "medico",
-            }),
+            body: JSON.stringify({ datos, rol: "medico" }),
             method: "POST",
           });
+          if (porInvitacion) {
+            const destinoVinculacion = window.sessionStorage.getItem(RUTA_DESTINO_KEY);
+            if (destinoVinculacion?.startsWith("/") && !destinoVinculacion.startsWith("//")) {
+              window.sessionStorage.removeItem(RUTA_DESTINO_KEY);
+              router.replace(destinoVinculacion);
+              return;
+            }
+            setListo(true);
+            setPendiente(true);
+            setSalvando(false);
+            router.replace("/medico/escanear");
+            return;
+          }
         } else {
           throw err;
         }
@@ -238,7 +276,7 @@ export default function CompletarPerfilMedicoPage() {
                     value={dni}
                   />
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="text-sm font-medium text-gray-700 block mb-1">
                       Matrícula profesional <span className="text-blue-600">*</span>
@@ -247,7 +285,7 @@ export default function CompletarPerfilMedicoPage() {
                       className={inputClass}
                       disabled={salvando}
                       onChange={(e) => setMatricula(e.target.value)}
-                      placeholder="MP 123456 / MN 789012"
+                      placeholder="MP 123456 / MN 789012 (o código si está en trámite)"
                       type="text"
                       value={matricula}
                     />
@@ -270,6 +308,20 @@ export default function CompletarPerfilMedicoPage() {
                   </div>
                 </div>
                 <p className="text-xs text-gray-400">Tu credencial se verifica contra el padrón SISA/REFEPS. Sin coincidencia, el alta se bloquea.</p>
+                <div>
+                  <label className="text-sm font-medium text-gray-700 block mb-1">
+                    Código de invitación de médico
+                  </label>
+                  <input
+                    className={inputClass}
+                    disabled={salvando}
+                    onChange={(e) => setCodigo(e.target.value)}
+                    placeholder="Solo si tu matrícula está en trámite"
+                    type="text"
+                    value={codigo}
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Si aún no tenés matrícula, ingresá el código provisto por tu institución.</p>
+                </div>
                 <div>
                   <label className="text-sm font-medium text-gray-700 block mb-1">
                     Especialidad <span className="text-blue-600">*</span>
@@ -301,6 +353,12 @@ export default function CompletarPerfilMedicoPage() {
               {error && (
                 <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
                   {error}
+                </p>
+              )}
+
+              {pendiente && (
+                <p className="text-sm text-blue-800 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 mb-4">
+                  Perfil guardado como pendiente de verificación de matrícula. Ya podés operar con acceso completo; cuando te otorguen tu matrícula definitiva, actualizala aquí.
                 </p>
               )}
 

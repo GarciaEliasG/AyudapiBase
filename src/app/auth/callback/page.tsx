@@ -18,12 +18,14 @@ import {
 import { esRutaMedica, rutaPorRol } from "@/lib/auth/ruteo";
 import { createBrowserClient } from "@/lib/supabase/browser";
 import {
-  perfilMedicoCompleto,
+  perfilMedicoOperativo,
   perfilPacienteCompleto,
 } from "@/lib/validation/profile";
 
 interface PerfilMedicoResumen {
   especialidad?: string | null;
+  estado_verificacion?: string | null;
+  invite_modo?: string | null;
   matricula?: string | null;
   telefono_contacto?: string | null;
 }
@@ -57,11 +59,11 @@ function rutearPorRol(
 ) {
   const destino = window.sessionStorage.getItem(RUTA_DESTINO_KEY);
 
-  // Médico con perfil incompleto (matrícula/especialidad/teléfono): se le pide
-  // completar los datos obligatorios antes de operar. Se conserva
-  // RUTA_DESTINO_KEY para reanudar el flujo (p. ej. un QR de emergencia) al
-  // terminar.
-  if (rol === "medico" && perfilMedico && !perfilMedicoCompleto(perfilMedico)) {
+  // Gate operativo (etapa de desarrollo): "pendiente" opera igual que
+  // "verificado". Solo los perfiles sin datos mínimos completan el alta.
+  // Se conserva RUTA_DESTINO_KEY para reanudar el flujo (p. ej. un QR de
+  // emergencia) al terminar.
+  if (rol === "medico" && perfilMedico && !perfilMedicoOperativo(perfilMedico)) {
     router.replace("/medico/completar-perfil");
     return;
   }

@@ -18,7 +18,7 @@ import {
   esMatriculaRealValida,
   esTelefonoValido,
   JURISDICCIONES_SISA,
-  perfilMedicoCompleto,
+  perfilMedicoOperativo,
   perfilPacienteCompleto,
 } from "@/lib/validation/profile";
 
@@ -39,6 +39,8 @@ interface PerfilVinculado {
   } | null;
   perfil_medico?: {
     especialidad?: string | null;
+    estado_verificacion?: string | null;
+    invite_modo?: string | null;
     matricula?: string | null;
     telefono_contacto?: string | null;
   } | null;
@@ -77,6 +79,8 @@ function ElegirRolContenido() {
   const [email, setEmail] = useState<string | null>(null);
   const [rol, setRol] = useState<RolElegible>("paciente");
   const [alias, setAlias] = useState("");
+  const [codigoInvitacion, setCodigoInvitacion] = useState("");
+  const [codigoMedico, setCodigoMedico] = useState("");
   const [cuit, setCuit] = useState("");
   const [dni, setDni] = useState("");
   const [documentacion, setDocumentacion] = useState("");
@@ -116,7 +120,9 @@ function ElegirRolContenido() {
       if (typeof window !== "undefined") {
         window.sessionStorage.removeItem(RUTA_DESTINO_KEY);
       }
-      if (rolFinal === "medico" && perfilMedico && !perfilMedicoCompleto(perfilMedico)) {
+      // Gate operativo (etapa de desarrollo): "pendiente" opera igual que
+      // "verificado". Solo los perfiles sin datos mínimos completan el alta.
+      if (rolFinal === "medico" && perfilMedico && !perfilMedicoOperativo(perfilMedico)) {
         router.replace("/medico/completar-perfil");
         return;
       }
@@ -187,6 +193,7 @@ function ElegirRolContenido() {
   function datosSegunRol(): Record<string, unknown> {
     if (rol === "medico") {
       return {
+        codigo_invitacion: codigoMedico.trim() || undefined,
         dni: dni.trim() || undefined,
         especialidad: especialidad.trim() || undefined,
         jurisdiccion: jurisdiccion.trim() || undefined,
@@ -196,6 +203,7 @@ function ElegirRolContenido() {
     }
     if (rol === "institucion") {
       return {
+        codigo_invitacion: codigoInvitacion.trim() || undefined,
         cuit: cuit.trim() || undefined,
         documentacion: documentacion.trim() || undefined,
         nombre: nombreInstitucion.trim() || undefined,
@@ -209,13 +217,23 @@ function ElegirRolContenido() {
   }
 
   function validar(): string | null {
-    if (!esDniEstrictoValido(dni)) {
-      return "El DNI es obligatorio y debe tener exactamente 7 u 8 dígitos numéricos, sin puntos ni letras.";
+    // El DNI solo aplica a paciente y médico. Las instituciones se identifican
+    // por CUIT: el campo DNI se ignora por completo con rol `institucion`.
+    if (rol === "paciente" || rol === "medico") {
+      if (!esDniEstrictoValido(dni)) {
+        return "El DNI es obligatorio y debe tener exactamente 7 u 8 dígitos numéricos, sin puntos ni letras.";
+      }
     }
     if (rol === "medico") {
       const matriculaLimpia = matricula.trim();
-      if (!esMatriculaRealValida(matriculaLimpia) && !esMatriculaDePrueba(matriculaLimpia)) {
+      // Matrícula ausente o en trámite: se admite código de invitación médica
+      // (el backend lo exige vía `MEDICO_INVITE_CODE`, 403 fail-closed).
+      const sinMatricula = matriculaLimpia.length === 0;
+      if (!sinMatricula && !esMatriculaRealValida(matriculaLimpia) && !esMatriculaDePrueba(matriculaLimpia)) {
         return "La matrícula profesional es obligatoria: 4 a 8 dígitos (con o sin prefijo MN/MP/ME).";
+      }
+      if (sinMatricula && codigoMedico.trim().length === 0) {
+        return "Ingresá tu matrícula profesional o el código de invitación de médico.";
       }
       if (!esJurisdiccionSisaValida(jurisdiccion)) {
         return "La jurisdicción es obligatoria: seleccioná la emisora oficial (Nacional o provincia).";
@@ -237,6 +255,9 @@ function ElegirRolContenido() {
       }
       if (documentacion.trim().length === 0) {
         return "La documentación de respaldo es obligatoria.";
+      }
+      if (codigoInvitacion.trim().length === 0) {
+        return "El código de invitación institucional es obligatorio. Solicitalo a un administrador.";
       }
       return null;
     }
@@ -370,7 +391,7 @@ function ElegirRolContenido() {
               />
               <p className="text-xs text-gray-400 mt-1">Una sola cuenta por DNI. Si ya tenés cuenta, iniciá sesión.</p>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="text-sm font-medium text-gray-700 block mb-1">Nombre</label>
                 <input
@@ -411,7 +432,7 @@ function ElegirRolContenido() {
                 value={dni}
               />
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="text-sm font-medium text-gray-700 block mb-1">
                   Matrícula profesional <span className="text-blue-600">*</span>
@@ -419,7 +440,7 @@ function ElegirRolContenido() {
                 <input
                   className={inputClass}
                   onChange={(e) => setMatricula(e.target.value)}
-                  placeholder="MP 123456 / MN 789012"
+                  placeholder="MP 123456 / MN 789012 (o código si está en trámite)"
                   type="text"
                   value={matricula}
                 />
@@ -441,6 +462,19 @@ function ElegirRolContenido() {
               </div>
             </div>
             <p className="text-xs text-gray-400">Tu credencial se verifica contra el padrón SISA/REFEPS. Sin coincidencia, el alta se bloquea.</p>
+            <div>
+              <label className="text-sm font-medium text-gray-700 block mb-1">
+                Código de invitación de médico
+              </label>
+              <input
+                className={inputClass}
+                onChange={(e) => setCodigoMedico(e.target.value)}
+                placeholder="Solo si tu matrícula está en trámite"
+                type="text"
+                value={codigoMedico}
+              />
+              <p className="text-xs text-gray-400 mt-1">Si aún no tenés matrícula, ingresá el código provisto por tu institución.</p>
+            </div>
             <div>
               <label className="text-sm font-medium text-gray-700 block mb-1">
                 Especialidad <span className="text-blue-600">*</span>
@@ -506,6 +540,19 @@ function ElegirRolContenido() {
                 value={documentacion}
               />
               <p className="text-xs text-gray-400 mt-1">Constancias de habilitación, matrícula institucional, etc.</p>
+            </div>
+            <div>
+              <label className="text-sm font-medium text-gray-700 block mb-1">
+                Código de invitación <span className="text-blue-600">*</span>
+              </label>
+              <input
+                className={inputClass}
+                onChange={(e) => setCodigoInvitacion(e.target.value)}
+                placeholder="Código entregado por el administrador"
+                type="text"
+                value={codigoInvitacion}
+              />
+              <p className="text-xs text-gray-400 mt-1">El alta institucional no es pública: requiere invitación.</p>
             </div>
           </div>
         )}

@@ -58,7 +58,7 @@ interface Contact {
 }
 
 const INPUT_CLASS =
-  "w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500";
+  "w-full min-w-0 border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500";
 
 const SEV_COLOR: Record<Severidad, string> = {
   Crítico: "text-red-700 bg-red-50 border-red-300",
@@ -410,7 +410,7 @@ export default function CreateProfilePage() {
                 <p className="text-xs text-gray-400 mb-1.5">7 u 8 dígitos, sin puntos ni letras. Una sola cuenta por DNI.</p>
                 <input className={INPUT_CLASS} inputMode="numeric" maxLength={8} onChange={(e) => setDni(e.target.value.replace(/\D/g, "").slice(0, 8))} placeholder="Ej: 30123456" type="text" value={dni} />
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="text-sm font-semibold text-gray-700 block mb-1">Fecha de nacimiento <span className="text-blue-600">*</span></label>
                   <input className={INPUT_CLASS} onChange={(e) => setBirthDate(e.target.value)} type="date" value={birthDate} />
@@ -426,7 +426,7 @@ export default function CreateProfilePage() {
                   </select>
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                   <label className="text-sm font-semibold text-gray-700 block mb-1">Grupo sanguíneo <span className="text-blue-600">*</span></label>
                   <select className={INPUT_CLASS} onChange={(e) => setBloodGroup(e.target.value)} value={bloodGroup}>
@@ -463,7 +463,7 @@ export default function CreateProfilePage() {
               </div>
               <div className="border border-gray-100 rounded-xl p-4 mb-3">
                 <p className="text-sm font-semibold text-gray-600 mb-3">Agregar condición</p>
-                <div className="flex gap-2 mb-2">
+                <div className="flex flex-col sm:flex-row gap-2 mb-2">
                   <select className={INPUT_CLASS} onChange={(e) => setCondTipo(e.target.value)} value={condTipo}>
                     <option>Enfermedad crónica</option>
                     <option>Alergia</option>
@@ -477,7 +477,7 @@ export default function CreateProfilePage() {
                     <option>Leve</option>
                   </select>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-col sm:flex-row gap-2">
                   <input
                     className={INPUT_CLASS}
                     onChange={(e) => setCondDesc(e.target.value)}
@@ -486,8 +486,9 @@ export default function CreateProfilePage() {
                     type="text"
                     value={condDesc}
                   />
-                  <button className="w-9 h-9 bg-amber-500 hover:bg-amber-600 text-white rounded-lg flex items-center justify-center transition-colors flex-shrink-0" onClick={addCondition}>
+                  <button className="w-full sm:w-9 h-9 bg-amber-500 hover:bg-amber-600 text-white rounded-lg flex items-center justify-center gap-1.5 transition-colors flex-shrink-0" onClick={addCondition}>
                     <Plus size={16} />
+                    <span className="sm:hidden text-sm font-semibold">Agregar</span>
                   </button>
                 </div>
               </div>
@@ -516,12 +517,13 @@ export default function CreateProfilePage() {
               </div>
               <div className="border border-dashed border-gray-200 rounded-xl p-4 mb-3">
                 <p className="text-sm font-semibold text-gray-600 mb-3">Agregar medicamento</p>
-                <div className="flex gap-2">
+                <div className="flex flex-col sm:flex-row gap-2">
                   <input className={INPUT_CLASS} onChange={(e) => setMedName(e.target.value)} placeholder="Nombre del medicamento" type="text" value={medName} />
-                  <input className={cn(INPUT_CLASS, "w-28")} onChange={(e) => setMedDose(e.target.value)} placeholder="Dosis (ej: 50mg)" type="text" value={medDose} />
-                  <input className={cn(INPUT_CLASS, "w-28")} onChange={(e) => setMedFreq(e.target.value)} placeholder="Frecuencia" type="text" value={medFreq} />
-                  <button className="w-9 h-9 bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center justify-center transition-colors flex-shrink-0" onClick={addMedication}>
+                  <input className={cn(INPUT_CLASS, "w-full sm:w-28")} onChange={(e) => setMedDose(e.target.value)} placeholder="Dosis (ej: 50mg)" type="text" value={medDose} />
+                  <input className={cn(INPUT_CLASS, "w-full sm:w-28")} onChange={(e) => setMedFreq(e.target.value)} placeholder="Frecuencia" type="text" value={medFreq} />
+                  <button className="w-full sm:w-9 h-9 bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center justify-center gap-1.5 transition-colors flex-shrink-0" onClick={addMedication}>
                     <Plus size={16} />
+                    <span className="sm:hidden text-sm font-semibold">Agregar</span>
                   </button>
                 </div>
               </div>
@@ -575,7 +577,7 @@ export default function CreateProfilePage() {
               {contactos.map((contact, idx) => (
                 <div className={cn("rounded-xl p-4 mb-3", idx === 0 ? "bg-blue-50 border border-blue-100" : "bg-gray-50 border border-gray-100")} key={contact.id}>
                   <p className="text-xs font-bold text-blue-600 mb-3">{idx === 0 ? "Contacto principal (ICE)" : `Contacto adicional ${idx + 1}`}</p>
-                  <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
                     <div>
                       <label className="text-xs font-semibold text-gray-600 block mb-1">Nombre completo</label>
                       <input className={INPUT_CLASS} onChange={(e) => updateContact(contact.id, "nombre", e.target.value)} placeholder="María González" type="text" value={contact.nombre} />
@@ -675,14 +677,14 @@ export default function CreateProfilePage() {
           </div>
         )}
 
-        <div className="flex items-center justify-between mt-8 pb-8">
-          <button className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 transition-colors" onClick={headerBack}>
+        <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-3 mt-8 pb-8">
+          <button className="flex items-center justify-center sm:justify-start gap-1 text-sm text-gray-500 hover:text-gray-700 transition-colors py-2" onClick={headerBack}>
             <ChevronLeft size={16} />
             {step === 1 ? "Volver al inicio" : "Anterior"}
           </button>
           {step < 4 ? (
             <button
-              className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold text-sm px-6 py-2.5 rounded-xl transition-colors"
+              className="flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold text-sm px-6 py-2.5 rounded-xl transition-colors w-full sm:w-auto"
               disabled={cargandoPerfil || Boolean(loadError)}
               onClick={irSiguiente}
             >
@@ -691,7 +693,7 @@ export default function CreateProfilePage() {
             </button>
           ) : (
             <button
-              className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold text-sm px-6 py-2.5 rounded-xl transition-colors"
+              className="flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold text-sm px-6 py-2.5 rounded-xl transition-colors w-full sm:w-auto"
               disabled={cargandoPerfil || saving || Boolean(loadError)}
               onClick={handleSave}
             >

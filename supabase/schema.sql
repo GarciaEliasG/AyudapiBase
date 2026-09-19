@@ -78,6 +78,7 @@ create table if not exists public.perfiles_medico (
   especialidad      text,
   institucion_id    uuid references public.perfiles_institucion(id) on delete set null,
   telefono_contacto text,
+  invite_modo       text,
   creado_en         timestamptz not null default now()
 );
 
@@ -250,7 +251,11 @@ begin
     -- que luego se reemplaza en la vinculación o el completado de perfil.
     -- Persiste además DNI, jurisdicción y estado de verificación SISA cuando
     -- viajan en `p_datos` (alta por email/contraseña y OAuth).
-    insert into public.perfiles_medico (usuario_id, matricula, especialidad, telefono_contacto, dni, jurisdiccion, estado_verificacion)
+    -- `invite_modo` ('codigo') marca la excepción por invitación
+    -- (`MEDICO_INVITE_CODE`): habilita la operación clínica pendiente de
+    -- regularización y etiqueta su auditoría. Solo viaja en altas por
+    -- invitación; el alta estricta lo deja NULL.
+    insert into public.perfiles_medico (usuario_id, matricula, especialidad, telefono_contacto, dni, jurisdiccion, estado_verificacion, invite_modo)
     values (
       p_usuario_id,
       coalesce(
@@ -268,19 +273,32 @@ begin
       p_datos->>'telefono_contacto',
       nullif(p_datos->>'dni', ''),
       nullif(upper(p_datos->>'jurisdiccion'), ''),
-      coalesce(nullif(p_datos->>'estado_verificacion', ''), 'pendiente')
+      coalesce(nullif(p_datos->>'estado_verificacion', ''), 'pendiente'),
+      nullif(p_datos->>'invite_modo', '')
     )
     on conflict (usuario_id) do nothing;
 
   elsif p_rol = 'institucion' then
-    insert into public.perfiles_institucion (usuario_id, nombre, cuit, documentacion)
+    -- Alta institucional: persiste todos los campos del esquema Zod
+    -- (`institucionAltaSchema`). `telefono` admite el alias legacy
+    -- `telefono_contacto` y `nombre` el alias `nombreInstitucion`.
+    insert into public.perfiles_institucion (usuario_id, nombre, cuit, direccion, telefono, email_contacto, documentacion)
     values (
       p_usuario_id,
-      coalesce(p_datos->>'nombre', 'Institución'),
-      p_datos->>'cuit',
+      coalesce(nullif(p_datos->>'nombre', ''), 'Institución'),
+      nullif(p_datos->>'cuit', ''),
+      nullif(p_datos->>'direccion', ''),
+      coalesce(nullif(p_datos->>'telefono', ''), nullif(p_datos->>'telefono_contacto', '')),
+      nullif(p_datos->>'email_contacto', ''),
       coalesce(p_datos->'documentacion', '[]'::jsonb)
     )
-    on conflict (usuario_id) do nothing;
+    on conflict (usuario_id) do update set
+      nombre = excluded.nombre,
+      cuit = coalesce(excluded.cuit, public.perfiles_institucion.cuit),
+      direccion = coalesce(excluded.direccion, public.perfiles_institucion.direccion),
+      telefono = coalesce(excluded.telefono, public.perfiles_institucion.telefono),
+      email_contacto = coalesce(excluded.email_contacto, public.perfiles_institucion.email_contacto),
+      documentacion = case when excluded.documentacion = '[]'::jsonb then public.perfiles_institucion.documentacion else excluded.documentacion end;
   end if;
 
   return json_build_object('success', true, 'rol', p_rol);
@@ -449,6 +467,34 @@ alter table public.perfiles_medico
   add column if not exists jurisdiccion text,
   add column if not exists dni text,
   add column if not exists estado_verificacion text not null default 'pendiente';
+
+-- =============================================================================
+-- Migración: excepción por invitación médica (`MEDICO_INVITE_CODE`)
+-- Idempotente: seguro re-ejecutar. `invite_modo` ('codigo') distingue a los
+-- médicos que operan con matrícula provisoria bajo excepción de invitación
+-- de los perfiles provisorios legacy (que deben regularizar en
+-- `/medico/completar-perfil`). El backfill marca las altas por invitación
+-- previas a esta columna cruzando la auditoría (`invite_modo` en detalles)
+-- restringido a filas aún provisorias (evita falsos positivos en dual-rol).
+-- =============================================================================
+alter table public.perfiles_medico
+  add column if not exists invite_modo text;
+
+update public.perfiles_medico pm
+set invite_modo = 'codigo'
+where pm.invite_modo is null
+  and (
+    pm.matricula is null
+    or pm.matricula = ''
+    or lower(pm.matricula) = 's/m'
+    or pm.matricula like 'PENDIENTE-%'
+  )
+  and exists (
+    select 1 from public.logs_auditoria la
+    where la.usuario_id = pm.usuario_id
+      and la.accion = 'registro'
+      and la.detalles->>'invite_modo' = 'codigo'
+  );
 
 do $$ begin
   if not exists (

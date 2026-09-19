@@ -3,17 +3,22 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 /**
  * Unicidad y persistencia del perfil médico con degradación elegante.
  *
- * Columnas extendidas (`jurisdiccion`, `dni`, `estado_verificacion`) pueden no
- * existir aún en la base (ver migración al final de `supabase/schema.sql`).
- * Todas las lecturas/escrituras extendidas detectan "columna inexistente"
- * (`PGRST204` / `42703`) y caen al comportamiento base (solo `matricula`),
- * para no romper producción antes de aplicar la migración.
+ * Columnas extendidas (`jurisdiccion`, `dni`, `estado_verificacion`,
+ * `invite_modo`) pueden no existir aún en la base (ver migración al final de
+ * `supabase/schema.sql`). Todas las lecturas/escrituras extendidas detectan
+ * "columna inexistente" (`PGRST204` / `42703`) y caen al comportamiento base
+ * (solo `matricula`), para no romper producción antes de aplicar la migración.
  */
 
 export interface ValoresMedico {
   dni?: string | null;
   especialidad: string;
   estadoVerificacion?: string | null;
+  /**
+   * Marcador de excepción por invitación (`'codigo'`) o `null` para
+   * limpiarlo al regularizar con matrícula real. `undefined` = no tocar.
+   */
+  inviteModo?: string | null;
   jurisdiccion?: string | null;
   matricula: string;
   telefonoContacto: string;
@@ -210,6 +215,9 @@ export async function guardarPerfilMedico(
   }
   if (valores.estadoVerificacion !== undefined && valores.estadoVerificacion !== null) {
     extendida.estado_verificacion = valores.estadoVerificacion;
+  }
+  if (valores.inviteModo !== undefined) {
+    extendida.invite_modo = valores.inviteModo;
   }
   const conExtendida = Object.keys(extendida).length > 0;
 

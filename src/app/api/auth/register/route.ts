@@ -10,6 +10,17 @@ import {
   motivoBloqueoMatriculaDePrueba,
   verificacionPara,
 } from "@/lib/auth/dev-bypass";
+import {
+  CODIGO_INSTITUCION_INVALIDO,
+  verificarCodigoInvitacionInstitucion,
+  verificarCuitInstitucion,
+} from "@/lib/auth/institucion";
+import {
+  CODIGO_MEDICO_INVALIDO,
+  invitacionMedicaHabilitada,
+  verificarCodigoInvitacionMedico,
+  type ModoInvitacion,
+} from "@/lib/auth/invitacion";
 import { confirmarYProvisionar } from "@/lib/auth/registro";
 import { jsonError, jsonOk } from "@/lib/auth/session";
 import { verificarProfesionalSisa } from "@/lib/auth/sisa";
@@ -18,13 +29,16 @@ import {
   verificarUnicidadMedico,
 } from "@/lib/auth/verificacion-medico";
 import { createAdminServerClient, createAnonServerClient } from "@/lib/supabase/server";
-import { esTelefonoValido, normalizarJurisdiccionSisa, normalizarMatricula } from "@/lib/validation/profile";
-import { esCuitValido, esEmailValido } from "@/lib/validation/profile";
+import { esEmailValido, esMatriculaProvisoria, esTelefonoValido, normalizarJurisdiccionSisa, normalizarMatricula } from "@/lib/validation/profile";
 import {
   detalle400DesdeZod,
   dniSchema,
+  institucionAltaSchema,
+  medicoAltaInvitacionSchema,
   medicoAltaSchema,
+  MENSAJE_CUIT_DUPLICADO,
   MENSAJE_DNI_DUPLICADO,
+  normalizarInstitucionCruda,
 } from "@/lib/validation/schemas";
 
 export const runtime = "nodejs";
@@ -36,10 +50,13 @@ const SIN_USUARIO = "00000000-0000-0000-0000-000000000000";
 
 interface RegisterRequest {
   alias?: string;
+  codigo_invitacion?: string;
   cuit?: string;
+  direccion?: string;
   dni?: string;
-  documentacion?: unknown[];
+  documentacion?: unknown;
   email: string;
+  email_contacto?: string;
   especialidad?: string;
   jurisdiccion?: string;
   matricula?: string;
@@ -47,6 +64,7 @@ interface RegisterRequest {
   nombre_completo?: string;
   password: string;
   rol?: RolUsuario;
+  telefono?: string;
   telefono_contacto?: string;
 }
 
@@ -65,6 +83,15 @@ async function dniOcupado(admin: SupabaseClient, dni: string): Promise<boolean> 
  *   padrón SISA: sin coincidencia se bloquea con 403 ("Médico no registrado…").
  *   Las matrículas `TEST-...` solo pasan con email en `DEV_ADMIN_EMAILS`
  *   (403 para usuarios comunes). Matrícula o DNI ya registrados → 409.
+ * - Médico por invitación (opcional, `MEDICO_INVITE_CODE` configurado):
+ *   matrícula ausente o en trámite + código válido → alta con matrícula
+ *   provisoria `PENDIENTE-...` y `estado_verificacion = "pendiente"` (sin
+ *   contraste SISA). Código ausente/inválido → 403 fail-closed. Sin secreto
+ *   configurado rige la vía estricta (matrícula obligatoria, 400).
+ * - Institución: nombre + CUIT (11 dígitos con checksum AFIP) +
+ *   documentación (≥1 referencia) + `codigo_invitacion` obligatorio contra
+ *   `INSTITUCION_INVITE_CODE` (403 si falta o no coincide). CUIT duplicado →
+ *   409. Mismo patrón Zod estricto que médico/paciente.
  * - El usuario queda habilitado de inmediato y la respuesta incluye la sesión.
  */
 export async function POST(req: Request) {
@@ -99,6 +126,8 @@ export async function POST(req: Request) {
   let telefonoNormalizado: string | undefined;
   let especialidadNormalizada: string | undefined;
   let verificacionMedica = "pendiente";
+  /** Modo de la vía de invitación médica, si se usó. */
+  let inviteMedicoModo: ModoInvitacion | null = null;
 
   if (rol === "medico") {
     const matriculaCruda = input.matricula?.trim() ?? "";
@@ -108,52 +137,99 @@ export async function POST(req: Request) {
     if (bloqueo) {
       return jsonError(bloqueo, 403);
     }
-    const validacion = medicoAltaSchema.safeParse({
-      dni: input.dni,
-      especialidad: input.especialidad,
-      jurisdiccion: input.jurisdiccion,
-      matricula: input.matricula,
-      telefono_contacto: input.telefono_contacto,
-    });
-    if (!validacion.success) {
-      const { detalles, mensaje } = detalle400DesdeZod(validacion.error);
-      return jsonError(mensaje, 400, detalles);
-    }
-    dniNormalizado = validacion.data.dni.trim();
-    jurisdiccionNormalizada =
-      normalizarJurisdiccionSisa(validacion.data.jurisdiccion) ?? validacion.data.jurisdiccion.trim().toUpperCase();
-    matriculaNormalizada = normalizarMatricula(validacion.data.matricula);
-    telefonoNormalizado = validacion.data.telefono_contacto.trim();
-    especialidadNormalizada = validacion.data.especialidad.trim();
-
     const esBypass = isDevBypassActiveFor(email);
-    // Unicidad (409) y padrón SISA (403): consultas independientes en paralelo.
-    const [dniRes, matriculaRes, sisaRes] = await Promise.all([
-      verificarDniGlobal(admin, { dni: dniNormalizado, usuarioId: SIN_USUARIO }),
-      verificarUnicidadMedico(admin, {
-        dni: dniNormalizado,
-        jurisdiccion: jurisdiccionNormalizada,
-        matricula: matriculaNormalizada,
-        usuarioId: SIN_USUARIO,
-      }),
-      esBypass
-        ? Promise.resolve({ ok: true as const })
-        : verificarProfesionalSisa(admin, {
-            dni: dniNormalizado,
-            jurisdiccion: jurisdiccionNormalizada,
-            matricula: matriculaNormalizada,
-          }),
-    ]);
-    if (dniRes.conflicto) {
-      return jsonError(MENSAJE_DNI_DUPLICADO, 409);
+    // Vía de invitación: matrícula ausente o en trámite + mecanismo habilitado
+    // (`MEDICO_INVITE_CODE`). Sin secreto configurado rige la vía estricta
+    // clásica (matrícula obligatoria, 400). Con secreto, el código se exige
+    // (403 fail-closed) y suple al padrón SISA: sin matrícula no hay qué
+    // contrastar; el perfil nace `pendiente` con matrícula provisoria
+    // `PENDIENTE-...` generada al provisionar.
+    const porInvitacion = !esBypass && esMatriculaProvisoria(matriculaCruda) && invitacionMedicaHabilitada();
+    if (porInvitacion) {
+      const validacion = medicoAltaInvitacionSchema.safeParse({
+        codigo_invitacion: input.codigo_invitacion,
+        dni: input.dni,
+        especialidad: input.especialidad,
+        jurisdiccion: input.jurisdiccion,
+        matricula: matriculaCruda.length > 0 ? matriculaCruda : undefined,
+        telefono_contacto: input.telefono_contacto,
+      });
+      if (!validacion.success) {
+        const { detalles, mensaje } = detalle400DesdeZod(validacion.error);
+        return jsonError(mensaje, 400, detalles);
+      }
+      const invitacion = verificarCodigoInvitacionMedico(validacion.data.codigo_invitacion);
+      if (!invitacion.ok) {
+        return jsonError(
+          invitacion.mensaje,
+          invitacion.status,
+          invitacion.code === CODIGO_MEDICO_INVALIDO
+            ? [{ campo: "codigo_invitacion", mensaje: invitacion.mensaje }]
+            : { code: invitacion.code },
+        );
+      }
+      dniNormalizado = validacion.data.dni.trim();
+      jurisdiccionNormalizada =
+        normalizarJurisdiccionSisa(validacion.data.jurisdiccion) ?? validacion.data.jurisdiccion.trim().toUpperCase();
+      // Sin matrícula real no hay unicidad de matrícula ni SISA que verificar:
+      // solo la unicidad global del DNI (409). La provisoria `PENDIENTE-...`
+      // la genera `confirmarYProvisionar` (única por usuario).
+      const dniRes = await verificarDniGlobal(admin, { dni: dniNormalizado, usuarioId: SIN_USUARIO });
+      if (dniRes.conflicto) {
+        return jsonError(MENSAJE_DNI_DUPLICADO, 409);
+      }
+      matriculaNormalizada = undefined;
+      telefonoNormalizado = validacion.data.telefono_contacto.trim();
+      especialidadNormalizada = validacion.data.especialidad.trim();
+      verificacionMedica = "pendiente";
+      inviteMedicoModo = invitacion.modo;
+    } else {
+      const validacion = medicoAltaSchema.safeParse({
+        dni: input.dni,
+        especialidad: input.especialidad,
+        jurisdiccion: input.jurisdiccion,
+        matricula: input.matricula,
+        telefono_contacto: input.telefono_contacto,
+      });
+      if (!validacion.success) {
+        const { detalles, mensaje } = detalle400DesdeZod(validacion.error);
+        return jsonError(mensaje, 400, detalles);
+      }
+      dniNormalizado = validacion.data.dni.trim();
+      jurisdiccionNormalizada =
+        normalizarJurisdiccionSisa(validacion.data.jurisdiccion) ?? validacion.data.jurisdiccion.trim().toUpperCase();
+      matriculaNormalizada = normalizarMatricula(validacion.data.matricula);
+      telefonoNormalizado = validacion.data.telefono_contacto.trim();
+      especialidadNormalizada = validacion.data.especialidad.trim();
+
+      // Unicidad (409) y padrón SISA (403): consultas independientes en paralelo.
+      const [dniRes, matriculaRes, sisaRes] = await Promise.all([
+        verificarDniGlobal(admin, { dni: dniNormalizado, usuarioId: SIN_USUARIO }),
+        verificarUnicidadMedico(admin, {
+          dni: dniNormalizado,
+          jurisdiccion: jurisdiccionNormalizada,
+          matricula: matriculaNormalizada,
+          usuarioId: SIN_USUARIO,
+        }),
+        esBypass
+          ? Promise.resolve({ ok: true as const })
+          : verificarProfesionalSisa(admin, {
+              dni: dniNormalizado,
+              jurisdiccion: jurisdiccionNormalizada,
+              matricula: matriculaNormalizada,
+            }),
+      ]);
+      if (dniRes.conflicto) {
+        return jsonError(MENSAJE_DNI_DUPLICADO, 409);
+      }
+      if (matriculaRes.conflicto) {
+        return jsonError(matriculaRes.conflicto, 409);
+      }
+      if (!sisaRes.ok) {
+        return jsonError(sisaRes.mensaje, 403);
+      }
+      verificacionMedica = verificacionPara(email);
     }
-    if (matriculaRes.conflicto) {
-      return jsonError(matriculaRes.conflicto, 409);
-    }
-    if (!sisaRes.ok) {
-      return jsonError(sisaRes.mensaje, 403);
-    }
-    verificacionMedica = verificacionPara(email);
   }
 
   if (rol === "paciente") {
@@ -181,34 +257,86 @@ export async function POST(req: Request) {
     }
   }
 
+  // ── Institución: mismo patrón Zod estricto que médico/paciente ──────────
+  // Gate de seguridad ANTES de crear la cuenta (no dejar usuarios huérfanos):
+  // 1) esquema (400 por campo), 2) invitación (403), 3) CUIT único (409).
+  let institucionNormalizada: {
+    cuit: string;
+    direccion?: string;
+    documentacion: Array<{ referencia: string }>;
+    email_contacto?: string;
+    inviteModo: "codigo" | "dev-sin-codigo";
+    nombre: string;
+    telefono?: string;
+  } | null = null;
+
   if (rol === "institucion") {
-    const nombre = input.nombre?.trim() ?? "";
-    const cuit = input.cuit?.trim() ?? "";
-    const documentacion = input.documentacion ?? [];
-    if (nombre.length < 3) {
-      return jsonError("El nombre de la institución es obligatorio.", 400);
+    const validacion = institucionAltaSchema.safeParse(
+      normalizarInstitucionCruda({
+        codigo_invitacion: input.codigo_invitacion,
+        cuit: input.cuit,
+        direccion: input.direccion,
+        documentacion: input.documentacion,
+        email_contacto: input.email_contacto,
+        nombre: input.nombre,
+        telefono: input.telefono ?? input.telefono_contacto,
+      }),
+    );
+    if (!validacion.success) {
+      const { detalles, mensaje } = detalle400DesdeZod(validacion.error);
+      return jsonError(mensaje, 400, detalles);
     }
-    if (!esCuitValido(cuit)) {
-      return jsonError("El CUIT es obligatorio y debe tener 11 dígitos.", 400);
+    const invitacion = verificarCodigoInvitacionInstitucion(
+      validacion.data.codigo_invitacion,
+    );
+    if (!invitacion.ok) {
+      return jsonError(
+        invitacion.mensaje,
+        invitacion.status,
+        invitacion.code === CODIGO_INSTITUCION_INVALIDO
+          ? [{ campo: "codigo_invitacion", mensaje: invitacion.mensaje }]
+          : { code: invitacion.code },
+      );
     }
-    if (!Array.isArray(documentacion) || documentacion.length === 0) {
-      return jsonError("La documentación de respaldo es obligatoria.", 400);
+    const cuitRes = await verificarCuitInstitucion(admin, validacion.data.cuit, SIN_USUARIO);
+    if (cuitRes.error) {
+      return jsonError("No se pudo verificar el CUIT. Reintentá.", 500, cuitRes.error.code);
     }
+    if (cuitRes.conflicto) {
+      return jsonError(cuitRes.conflicto ?? MENSAJE_CUIT_DUPLICADO, 409);
+    }
+    institucionNormalizada = {
+      cuit: validacion.data.cuit,
+      direccion: validacion.data.direccion,
+      documentacion: validacion.data.documentacion,
+      email_contacto: validacion.data.email_contacto,
+      inviteModo: invitacion.modo,
+      nombre: validacion.data.nombre.trim(),
+      telefono: validacion.data.telefono,
+    };
   }
 
+  // `crear_perfil_inicial` solo lee claves conocidas por rol: para institución
+  // se persisten los valores NORMALIZADOS (Zod), no el crudo del formulario.
+  // `invite_modo` marca la excepción médica por invitación para el RPC.
   const datos: Record<string, unknown> = {
     alias: input.alias,
-    cuit: input.cuit,
+    cuit: institucionNormalizada?.cuit ?? input.cuit,
+    direccion: institucionNormalizada?.direccion,
     dni: dniNormalizado,
-    documentacion: input.documentacion,
+    documentacion: institucionNormalizada?.documentacion ?? input.documentacion,
     email,
+    email_contacto: institucionNormalizada?.email_contacto,
     especialidad: especialidadNormalizada ?? input.especialidad,
     estado_verificacion: rol === "medico" ? verificacionMedica : undefined,
+    invite_modo: inviteMedicoModo ?? undefined,
     jurisdiccion: jurisdiccionNormalizada ?? input.jurisdiccion,
     matricula: matriculaNormalizada ?? input.matricula,
-    nombre: input.nombre,
+    nombre: institucionNormalizada?.nombre ?? input.nombre,
     nombre_completo: input.nombre_completo,
-    telefono_contacto: telefonoNormalizado ?? input.telefono_contacto,
+    telefono: institucionNormalizada?.telefono,
+    telefono_contacto:
+      telefonoNormalizado ?? institucionNormalizada?.telefono ?? input.telefono_contacto,
   };
 
   // 1. Se crea la cuenta ya confirmada. Sin confirmar por email, el usuario
@@ -260,9 +388,16 @@ export async function POST(req: Request) {
   }
 
   // Aviso de actividad: cuenta recién creada (best-effort, no bloquea).
+  // Para institución/médico por invitación se audita el modo (`codigo` vs
+  // bypass dev) como registro de la excepción.
   await registrarActividadSesion(admin, {
     accion: "registro",
-    detalles: { canal: "register-email", rol },
+    detalles: {
+      canal: "register-email",
+      ...(institucionNormalizada ? { invite_modo: institucionNormalizada.inviteModo } : {}),
+      ...(inviteMedicoModo ? { invite_modo: inviteMedicoModo } : {}),
+      rol,
+    },
     direccionIp: ipDeRequest(req),
     email,
     usuarioId: userId,

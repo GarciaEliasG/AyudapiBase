@@ -1,5 +1,6 @@
 import type { Medicamento } from "@/lib/supabase/database";
 
+import { inviteModoMedico } from "@/lib/auth/invitacion";
 import {
   getBearerToken,
   getRolesForUser,
@@ -88,6 +89,10 @@ export async function GET(
 
   const admin = createAdminServerClient();
 
+  // Marca de excepción por invitación del operador (para etiquetar la
+  // auditoría). Independiente del QR: corre en paralelo con su lectura.
+  const inviteModoPromise = inviteModoMedico(admin, user.id);
+
   const { data: tokenRow, error: tokenError } = await admin
     .from("tokens_qr")
     .select("paciente_id, activo")
@@ -126,6 +131,9 @@ export async function GET(
     );
   }
 
+  // Operación bajo excepción por invitación: queda diferenciada en la
+  // auditoría (Ley 25.326). Ausente en médicos con credencial completa.
+  const inviteModo = await inviteModoPromise;
   await admin.from("logs_auditoria").insert({
     accion: "acceso_historial_clinico",
     paciente_id: perfil.id,
@@ -133,6 +141,7 @@ export async function GET(
     detalles: {
       slug,
       origen: accesoDesdeEmergencia ? "qr-emergencia" : "panel-medico",
+      ...(inviteModo ? { invite_modo: inviteModo } : {}),
     },
   });
 

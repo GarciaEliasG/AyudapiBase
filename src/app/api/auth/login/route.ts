@@ -28,16 +28,13 @@ function esEmailNoConfirmado(mensaje: string): boolean {
 }
 
 /**
- * Bloqueo terminante del panel médico (regla de oro de seguridad):
- * un usuario con rol `medico` cuya credencial no esté verificada contra el
- * padrón SISA (ni bypass autorizado con `DEV_ADMIN_EMAILS`) no puede iniciar
- * sesión como médico → HTTP 403. Casos:
+ * Control de acceso del panel médico (etapa de desarrollo): el estado
+ * "pendiente" —incluida la matrícula provisoria `PENDIENTE-...`— posee los
+ * mismos permisos que "verificado", sin bloqueos. Solo se bloquea:
  * - Matrícula `TEST-...` sin bypass → 403 (canal de prueba exclusivo dev).
- * - `estado_verificacion !== "verificado"` sin bypass → 403 ("Médico no
- *   registrado…"), debe regularizar su matrícula real.
- * - Sin fila o con matrícula provisoria → se permite (debe completar el alta
- *   en `/medico/completar-perfil` o `/api/auth/vincular-rol`, donde rige el
- *   mismo rigor). Falla abierto solo hacia la regularización, nunca al panel.
+ * - `estado_verificacion = "rechazado"` → 403 ("Médico no registrado…").
+ * - Sin fila o con matrícula provisoria → se permite (completa el alta en
+ *   `/medico/completar-perfil` o `/api/auth/vincular-rol`).
  */
 async function bloqueoPanelMedico(
   admin: SupabaseClient,
@@ -74,8 +71,13 @@ async function bloqueoPanelMedico(
   if (esMatriculaDePrueba(matricula) && !bypass) {
     return jsonError(MENSAJE_BYPASS_DENEGADO, 403);
   }
-  const estado = (perfil as { estado_verificacion?: unknown }).estado_verificacion;
-  if (!bypass && estado !== "verificado") {
+  const estadoRaw = (perfil as { estado_verificacion?: unknown })
+    .estado_verificacion;
+  const estado =
+    typeof estadoRaw === "string" ? estadoRaw.trim().toLowerCase() : "";
+  // Etapa de desarrollo: "pendiente" opera igual que "verificado". Solo el
+  // rechazo explícito bloquea el inicio de sesión como médico.
+  if (!bypass && estado === "rechazado") {
     return jsonError(MENSAJE_SISA, 403);
   }
   return null;
